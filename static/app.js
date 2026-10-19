@@ -140,7 +140,9 @@ async function fetchVideoInfo() {
 
     setVideoBtnLoading(videoFetchBtn, true);
     setVideoStatus('Fetching video information…');
-    hideVideoCard(videoProgressCard);
+    if (!videoDownloading) {
+        hideVideoCard(videoProgressCard);
+    }
 
     try {
         const resp = await fetch('/api/video/fetch', {
@@ -319,6 +321,7 @@ if (torrentMagnetInput) {
 }
 
 if (torrentFetchBtn) torrentFetchBtn.addEventListener('click', fetchTorrentInfo);
+if ($('#torrent-cancelFetchBtn')) $('#torrent-cancelFetchBtn').addEventListener('click', cancelTorrentFetch);
 if ($('#torrent-resetErrorBtn')) $('#torrent-resetErrorBtn').addEventListener('click', resetTorrentUI);
 if ($('#torrent-closeInfoBtn')) $('#torrent-closeInfoBtn').addEventListener('click', resetTorrentUI);
 if ($('#torrent-selectAllBtn')) $('#torrent-selectAllBtn').addEventListener('click', selectAllFiles);
@@ -364,9 +367,19 @@ function filterFilesByCategory(category) {
         if (category === 'doc') show = docExts.some(ext => name.endsWith(ext));
 
         item.style.display = show ? 'flex' : 'none';
-        const checkbox = item.querySelector('input[type="checkbox"]');
-        if (checkbox) checkbox.checked = show;
     });
+}
+
+let torrentFetchAbortController = null;
+
+function cancelTorrentFetch() {
+    if (torrentFetchAbortController) {
+        torrentFetchAbortController.abort();
+        torrentFetchAbortController = null;
+    }
+    showTorrentSection('input');
+    if (torrentFetchBtn) torrentFetchBtn.disabled = false;
+    showToast('Metadata fetch cancelled.', 'info');
 }
 
 async function fetchTorrentInfo() {
@@ -376,6 +389,11 @@ async function fetchTorrentInfo() {
         return;
     }
 
+    if (torrentFetchAbortController) {
+        torrentFetchAbortController.abort();
+    }
+    torrentFetchAbortController = new AbortController();
+
     showTorrentSection('loading');
     if (torrentFetchBtn) torrentFetchBtn.disabled = true;
 
@@ -384,6 +402,7 @@ async function fetchTorrentInfo() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ magnet_link: magnetLink }),
+            signal: torrentFetchAbortController.signal,
         });
 
         if (!response.ok) {
@@ -398,10 +417,14 @@ async function fetchTorrentInfo() {
         showToast('Torrent metadata fetched!', 'success');
 
     } catch (err) {
+        if (err.name === 'AbortError') {
+            return;
+        }
         showTorrentError('Metadata Error', err.message);
         showToast(err.message, 'error');
     } finally {
         if (torrentFetchBtn) torrentFetchBtn.disabled = false;
+        torrentFetchAbortController = null;
     }
 }
 

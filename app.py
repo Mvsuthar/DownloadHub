@@ -43,7 +43,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 # ─── Libtorrent Session (Global, High-Performance) ──────────────────────────
 
 settings = {
-    "user_agent": "TorrentBlitz/1.0",
+    "user_agent": "DownloadHub/1.0",
     "listen_interfaces": "0.0.0.0:6881,[::]:6881",
     "download_rate_limit": 0,        # unlimited
     "upload_rate_limit": 0,           # unlimited
@@ -426,7 +426,7 @@ def _build_torrent_info_dict(torrent_info, magnet_link: str, status) -> dict:
 
 
 @app.post("/api/torrent/fetch-info")
-async def fetch_torrent_info(req: MagnetRequest):
+async def fetch_torrent_info(req: MagnetRequest, request: Request):
     """
     Resolve a magnet link and return torrent metadata.
     Reuses cached handles to avoid DHT metadata loss.
@@ -475,6 +475,13 @@ async def fetch_torrent_info(req: MagnetRequest):
         timeout = 60
         start = time.time()
         while not handle.status().has_metadata:
+            if await request.is_disconnected():
+                if torrent_id not in active_downloads:
+                    try:
+                        ses.remove_torrent(handle)
+                    except Exception:
+                        pass
+                raise HTTPException(status_code=499, detail="Client cancelled metadata fetch.")
             await asyncio.sleep(0.5)
             if time.time() - start > timeout:
                 if torrent_id not in active_downloads:

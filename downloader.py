@@ -168,13 +168,24 @@ class Downloader:
             "restrictfilenames": False,
         }
 
-        if self.ffmpeg_available:
-            ydl_opts["merge_output_format"] = "mp4"
-            ydl_opts["keepvideo"] = False
-            ydl_opts["postprocessors"] = [
-                {"key": "FFmpegMetadata"},
-            ]
+        is_audio_only = 'audio' in format_id.lower() or format_id.startswith('bestaudio')
 
+        if self.ffmpeg_available:
+            if is_audio_only:
+                ydl_opts["postprocessors"] = [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "320",
+                    },
+                    {"key": "FFmpegMetadata"},
+                ]
+            else:
+                ydl_opts["merge_output_format"] = "mp4"
+                ydl_opts["keepvideo"] = False
+                ydl_opts["postprocessors"] = [
+                    {"key": "FFmpegMetadata"},
+                ]
 
         if progress_hook:
             ydl_opts["progress_hooks"] = [progress_hook]
@@ -187,8 +198,16 @@ class Downloader:
 
                 if info:
                     raw_path = ydl.prepare_filename(info)
-                    mp4_path = os.path.splitext(raw_path)[0] + ".mp4"
-                    if os.path.isfile(mp4_path):
+                    base_path = os.path.splitext(raw_path)[0]
+                    mp3_path = base_path + ".mp3"
+                    m4a_path = base_path + ".m4a"
+                    mp4_path = base_path + ".mp4"
+
+                    if is_audio_only and os.path.isfile(mp3_path):
+                        final_path = mp3_path
+                    elif is_audio_only and os.path.isfile(m4a_path):
+                        final_path = m4a_path
+                    elif os.path.isfile(mp4_path):
                         final_path = mp4_path
                     elif os.path.isfile(raw_path):
                         final_path = raw_path
@@ -196,7 +215,6 @@ class Downloader:
             raise
 
         # Only re-encode video downloads (skip audio-only)
-        is_audio_only = 'audio' in format_id.lower() or format_id.startswith('bestaudio')
         if final_path and self.ffmpeg_available and not is_audio_only:
             if status_callback:
                 status_callback("re-encoding")

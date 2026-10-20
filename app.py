@@ -58,16 +58,11 @@ settings = {
     "auto_manage_prefer_seeds": False,
     "announce_to_all_trackers": True,
     "announce_to_all_tiers": True,
+    "dht_bootstrap_nodes": "router.utorrent.com:6881,router.bittorrent.com:6881,dht.transmissionbt.com:6881,router.bitcomet.com:6881",
 }
 
-ses = lt.session()
-ses.apply_settings(settings)
+ses = lt.session(settings)
 
-# Bootstrap DHT with well-known routers
-ses.add_dht_router("router.utorrent.com", 6881)
-ses.add_dht_router("router.bittorrent.com", 6881)
-ses.add_dht_router("dht.transmissionbt.com", 6881)
-ses.add_dht_router("router.bitcomet.com", 6881)
 
 # ─── Active Downloads & Metadata Cache Store (Torrent) ───────────────────────
 
@@ -333,7 +328,9 @@ def _download_worker(task_id: str, url: str, format_id: str):
 
         status = d.get("status")
         with _tasks_lock:
-            task = _tasks[task_id]
+            task = _tasks.get(task_id)
+            if not task:
+                return
             if status == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 downloaded = d.get("downloaded_bytes", 0)
@@ -362,13 +359,15 @@ def _download_worker(task_id: str, url: str, format_id: str):
         output_dir = get_default_download_dir()
 
         with _tasks_lock:
-            _tasks[task_id]["status"] = "downloading"
+            if task_id in _tasks:
+                _tasks[task_id]["status"] = "downloading"
 
         def status_callback(phase: str):
             with _tasks_lock:
-                _tasks[task_id]["status"] = phase
-                _tasks[task_id]["speed"] = None
-                _tasks[task_id]["eta"] = None
+                if task_id in _tasks:
+                    _tasks[task_id]["status"] = phase
+                    _tasks[task_id]["speed"] = None
+                    _tasks[task_id]["eta"] = None
 
         path = downloader.download(
             url=url,
@@ -379,14 +378,16 @@ def _download_worker(task_id: str, url: str, format_id: str):
         )
 
         with _tasks_lock:
-            _tasks[task_id]["status"] = "complete"
-            _tasks[task_id]["percent"] = 100
-            _tasks[task_id]["filename"] = os.path.basename(path) if path else None
+            if task_id in _tasks:
+                _tasks[task_id]["status"] = "complete"
+                _tasks[task_id]["percent"] = 100
+                _tasks[task_id]["filename"] = os.path.basename(path) if path else None
 
     except Exception as exc:
         with _tasks_lock:
-            _tasks[task_id]["status"] = "error"
-            _tasks[task_id]["error"] = str(exc).split("\n")[0][:200]
+            if task_id in _tasks:
+                _tasks[task_id]["status"] = "error"
+                _tasks[task_id]["error"] = str(exc).split("\n")[0][:200]
 
     _cleanup_old_tasks()
 

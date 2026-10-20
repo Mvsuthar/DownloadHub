@@ -107,6 +107,8 @@ Torrents/
 # Tooling & Local Config
 # ==============================================================================
 .cache/
+data/
 graphify-out/
 .agents/
+
 

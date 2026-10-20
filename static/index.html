@@ -55,16 +55,26 @@
                     <span class="stat-dot active"></span>
                     <span id="torrent-activeCount">0</span> Active
                 </div>
+
+                <button id="header-settings-btn" type="button" class="stat-chip btn-icon-chip" title="Preferences & Download Folders" aria-label="Settings">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                </button>
             </div>
         </header>
 
         <!-- ─── TAB NAVIGATION BAR ──────────────────────────────────── -->
         <div class="tab-bar">
-            <button class="tab-btn active" data-tab="video-panel">
+            <button class="tab-btn active" data-tab="video-panel" type="button">
                 <span>🎬</span> Video Downloader
             </button>
-            <button class="tab-btn" data-tab="torrent-panel">
+            <button class="tab-btn" data-tab="torrent-panel" type="button">
                 <span>🧲</span> Torrent Downloader
+            </button>
+            <button class="tab-btn" data-tab="history-panel" type="button">
+                <span>📜</span> History
             </button>
             <div class="tab-indicator"></div>
         </div>
@@ -141,6 +151,10 @@
                     <span id="video-stat-speed">Speed: --</span>
                     <span id="video-stat-eta">ETA: --:--</span>
                     <span id="video-stat-size"></span>
+                </div>
+                <div id="video-complete-actions" class="complete-actions mt-3" hidden>
+                    <button id="video-open-file-btn" type="button" class="btn btn-primary btn-sm">▶ Open File</button>
+                    <button id="video-show-folder-btn" type="button" class="btn btn-secondary btn-sm">📁 Show in Folder</button>
                 </div>
                 <button id="video-cancel-btn" type="button" class="btn btn-danger mt-3" aria-label="Cancel download">✕ Cancel Download</button>
             </section>
@@ -289,6 +303,53 @@
                     <!-- Download cards populated dynamically -->
                 </div>
             </section>
+        </div>
+
+        <!-- ─── HISTORY PANEL ───────────────────────────────────────── -->
+        <div id="history-panel" class="tab-panel">
+            <section class="history-section">
+                <div class="history-header">
+                    <div class="history-search-wrapper">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <input type="text" id="history-search-input" placeholder="Search download history..." aria-label="Search download history">
+                    </div>
+                    <div class="history-controls">
+                        <button id="history-clear-btn" type="button" class="btn btn-secondary btn-sm" aria-label="Clear all history">🗑 Clear All</button>
+                    </div>
+                </div>
+
+                <div id="history-list" class="history-list mt-3">
+                    <!-- History cards populated dynamically -->
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal-backdrop" hidden>
+        <div class="modal-card glass-card">
+            <div class="modal-header">
+                <h2>Preferences & Download Folders</h2>
+                <button id="close-settings-btn" type="button" class="btn btn-close" aria-label="Close settings">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="card__label" for="cfg-video-dir">Video Downloads Folder</label>
+                    <input type="text" id="cfg-video-dir" class="url-input" spellcheck="false" placeholder="/home/user/Downloads">
+                </div>
+                <div class="form-group mt-3">
+                    <label class="card__label" for="cfg-torrent-dir">Torrent Downloads Folder</label>
+                    <input type="text" id="cfg-torrent-dir" class="url-input" spellcheck="false" placeholder="/home/user/Downloads/Torrents">
+                </div>
+                <p class="input-hint mt-3">Directories will be created automatically if they do not exist.</p>
+            </div>
+            <div class="modal-footer mt-4">
+                <button id="cancel-settings-btn" type="button" class="btn btn-secondary">Cancel</button>
+                <button id="save-settings-btn" type="button" class="btn btn-primary">Save Changes</button>
+            </div>
         </div>
     </div>
 

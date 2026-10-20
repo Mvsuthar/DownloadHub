@@ -54,14 +54,22 @@ const tabBtns = $$('.tab-btn');
 const tabPanels = $$('.tab-panel');
 const tabIndicator = $('.tab-indicator');
 
-tabBtns.forEach((btn, index) => {
+function updateTabIndicator(activeBtn) {
+    if (!tabIndicator || !activeBtn) return;
+    const bar = activeBtn.closest('.tab-bar');
+    if (!bar) return;
+    const barRect = bar.getBoundingClientRect();
+    const btnRect = activeBtn.getBoundingClientRect();
+    const leftOffset = btnRect.left - barRect.left - 6;
+    tabIndicator.style.width = `${btnRect.width}px`;
+    tabIndicator.style.transform = `translateX(${leftOffset}px)`;
+}
+
+tabBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
         tabBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-
-        if (tabIndicator) {
-            tabIndicator.style.transform = `translateX(${index * 100}%)`;
-        }
+        updateTabIndicator(btn);
 
         const targetPanelId = btn.getAttribute('data-tab');
         tabPanels.forEach(panel => {
@@ -71,8 +79,23 @@ tabBtns.forEach((btn, index) => {
                 panel.classList.remove('active');
             }
         });
+
+        if (targetPanelId === 'history-panel') {
+            loadHistory();
+        }
     });
 });
+
+window.addEventListener('resize', () => {
+    const activeBtn = $('.tab-btn.active');
+    if (activeBtn) updateTabIndicator(activeBtn);
+});
+
+// Initial tab indicator positioning
+setTimeout(() => {
+    const activeBtn = $('.tab-btn.active');
+    if (activeBtn) updateTabIndicator(activeBtn);
+}, 60);
 
 // ─── VIDEO DOWNLOADER MODULE ────────────────────────────────────────────────
 
@@ -101,6 +124,7 @@ let videoData = null;
 let videoDownloading = false;
 let videoCurrentTaskId = null;
 let videoCurrentEvtSource = null;
+let lastCompletedVideoPath = null;
 
 function setVideoStatus(text, level = '') {
     if (videoStatusText) videoStatusText.textContent = text;
@@ -212,6 +236,10 @@ async function startVideoDownload() {
     showVideoCard(videoProgressCard);
     setVideoStatus('Downloading video…');
 
+    lastCompletedVideoPath = null;
+    const videoActions = $('#video-complete-actions');
+    if (videoActions) videoActions.setAttribute('hidden', '');
+
     try {
         const resp = await fetch('/api/video/download', {
             method: 'POST',
@@ -246,6 +274,12 @@ async function startVideoDownload() {
                 videoProgressFill.style.width = '100%';
                 setVideoStatus(`✔ Download completed successfully!`, 'success');
                 showToast('Video download finished!', 'success');
+
+                if (d.filepath) {
+                    lastCompletedVideoPath = d.filepath;
+                    if (videoActions) videoActions.removeAttribute('hidden');
+                }
+
                 evtSource.close();
                 finishVideoDownload();
             }
@@ -768,6 +802,29 @@ function markTorrentComplete(torrentId) {
     if (speedEl) speedEl.textContent = '—';
     const etaEl = $(`#torrent-eta-${torrentId}`);
     if (etaEl) etaEl.textContent = 'Done';
+
+    const card = torrentDownloadCards[torrentId];
+    if (card && !card.querySelector('.torrent-show-folder-btn')) {
+        const actionRow = document.createElement('div');
+        actionRow.className = 'complete-actions mt-3';
+        actionRow.innerHTML = `
+            <button class="btn btn-secondary btn-sm torrent-show-folder-btn" type="button">📁 Show in Folder</button>
+        `;
+        card.appendChild(actionRow);
+        actionRow.querySelector('.torrent-show-folder-btn').addEventListener('click', async () => {
+            try {
+                const confRes = await fetch('/api/system/config');
+                if (confRes.ok) {
+                    const conf = await confRes.json();
+                    if (conf.torrent_download_dir) {
+                        showInFolder(conf.torrent_download_dir);
+                    }
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        });
+    }
 }
 
 async function toggleTorrentPause(torrentId) {
@@ -851,6 +908,20 @@ function getFileName(path) {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadExistingTorrentDownloads();
+
+    // Wire completed video action buttons
+    const videoOpenFileBtn = $('#video-open-file-btn');
+    const videoShowFolderBtn = $('#video-show-folder-btn');
+    if (videoOpenFileBtn) {
+        videoOpenFileBtn.addEventListener('click', () => {
+            if (lastCompletedVideoPath) openFile(lastCompletedVideoPath);
+        });
+    }
+    if (videoShowFolderBtn) {
+        videoShowFolderBtn.addEventListener('click', () => {
+            if (lastCompletedVideoPath) showInFolder(lastCompletedVideoPath);
+        });
+    }
 });
 
 async function loadExistingTorrentDownloads() {
@@ -872,4 +943,223 @@ async function loadExistingTorrentDownloads() {
     } catch (err) {
         // No downloads yet
     }
+}
+
+// ─── SYSTEM FILE OPERATIONS & UTILITIES ──────────────────────────────────────
+
+async function openFile(filePath) {
+    if (!filePath) return;
+    try {
+        const res = await fetch('/api/system/open-file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_path: filePath }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast(err.detail || 'Could not open file on system.', 'error');
+        } else {
+            showToast('Opening file with default application...', 'info');
+        }
+    } catch (e) {
+        showToast('Failed to open file: ' + e.message, 'error');
+    }
+}
+
+async function showInFolder(filePath) {
+    if (!filePath) return;
+    try {
+        const res = await fetch('/api/system/show-in-folder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_path: filePath }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast(err.detail || 'Could not reveal file in folder.', 'error');
+        } else {
+            showToast('Opening file location...', 'info');
+        }
+    } catch (e) {
+        showToast('Failed to show folder: ' + e.message, 'error');
+    }
+}
+
+function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+}
+
+// ─── SETTINGS MODAL ENGINE ──────────────────────────────────────────────────
+
+const settingsModal = $('#settings-modal');
+const headerSettingsBtn = $('#header-settings-btn');
+const closeSettingsBtn = $('#close-settings-btn');
+const cancelSettingsBtn = $('#cancel-settings-btn');
+const saveSettingsBtn = $('#save-settings-btn');
+const cfgVideoDir = $('#cfg-video-dir');
+const cfgTorrentDir = $('#cfg-torrent-dir');
+
+function openSettingsModal() {
+    loadSettings();
+    if (settingsModal) settingsModal.removeAttribute('hidden');
+}
+
+function closeSettingsModal() {
+    if (settingsModal) settingsModal.setAttribute('hidden', '');
+}
+
+async function loadSettings() {
+    try {
+        const res = await fetch('/api/system/config');
+        if (!res.ok) return;
+        const config = await res.json();
+        if (cfgVideoDir) cfgVideoDir.value = config.video_download_dir || '';
+        if (cfgTorrentDir) cfgTorrentDir.value = config.torrent_download_dir || '';
+    } catch (e) {
+        console.error('Failed to load settings:', e);
+    }
+}
+
+async function saveSettings() {
+    const videoDir = cfgVideoDir ? cfgVideoDir.value.trim() : '';
+    const torrentDir = cfgTorrentDir ? cfgTorrentDir.value.trim() : '';
+
+    try {
+        const res = await fetch('/api/system/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_dir: videoDir, torrent_dir: torrentDir }),
+        });
+        if (res.ok) {
+            showToast('Download directories updated!', 'success');
+            closeSettingsModal();
+        } else {
+            showToast('Failed to save settings.', 'error');
+        }
+    } catch (e) {
+        showToast('Error saving settings: ' + e.message, 'error');
+    }
+}
+
+if (headerSettingsBtn) headerSettingsBtn.addEventListener('click', openSettingsModal);
+if (closeSettingsBtn) closeSettingsBtn.addEventListener('click', closeSettingsModal);
+if (cancelSettingsBtn) cancelSettingsBtn.addEventListener('click', closeSettingsModal);
+if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveSettings);
+
+if (settingsModal) {
+    settingsModal.addEventListener('click', (e) => {
+        if (e.target === settingsModal) closeSettingsModal();
+    });
+}
+
+// ─── HISTORY ENGINE ─────────────────────────────────────────────────────────
+
+const historyList = $('#history-list');
+const historySearchInput = $('#history-search-input');
+const historyClearBtn = $('#history-clear-btn');
+let historySearchDebounce = null;
+
+async function loadHistory(query = '') {
+    if (!historyList) return;
+    try {
+        const res = await fetch(`/api/history?search=${encodeURIComponent(query)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        renderHistory(data.history || []);
+    } catch (e) {
+        console.error('Failed to load history:', e);
+    }
+}
+
+function renderHistory(items) {
+    if (!historyList) return;
+    historyList.innerHTML = '';
+
+    if (!items || items.length === 0) {
+        historyList.innerHTML = `
+            <div class="history-empty">
+                <div class="history-empty-icon">📜</div>
+                <h3>No Downloads in History</h3>
+                <p>Downloaded videos and torrents will automatically appear here.</p>
+            </div>
+        `;
+        return;
+    }
+
+    items.forEach((item) => {
+        const card = document.createElement('div');
+        card.className = 'history-card';
+        const isVideo = (item.type || item.item_type) === 'video';
+        const badgeClass = isVideo ? 'history-badge--video' : 'history-badge--torrent';
+        const badgeLabel = isVideo ? '🎬 Video' : '🧲 Torrent';
+        const timestamp = item.completed_at ? (item.completed_at < 1e11 ? item.completed_at * 1000 : item.completed_at) : Date.now();
+        const dateStr = new Date(timestamp).toLocaleString();
+
+        card.innerHTML = `
+            <div class="history-info">
+                <div class="history-title-row">
+                    <span class="history-badge ${badgeClass}">${badgeLabel}</span>
+                    <span class="history-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
+                </div>
+                <div class="history-meta">
+                    <span>${formatBytes(item.file_size)}</span>
+                    <span>•</span>
+                    <span>${dateStr}</span>
+                    <span>•</span>
+                    <span class="history-path" title="${escapeHtml(item.file_path)}">${escapeHtml(item.file_path)}</span>
+                </div>
+            </div>
+            <div class="history-actions">
+                <button class="btn btn-primary btn-sm open-btn" type="button" title="Open File">▶ Open</button>
+                <button class="btn btn-secondary btn-sm folder-btn" type="button" title="Show in Folder">📁 Folder</button>
+                <button class="btn btn-secondary btn-sm delete-btn" type="button" title="Delete from history">🗑</button>
+            </div>
+        `;
+
+        card.querySelector('.open-btn').addEventListener('click', () => openFile(item.file_path));
+        card.querySelector('.folder-btn').addEventListener('click', () => showInFolder(item.file_path));
+        card.querySelector('.delete-btn').addEventListener('click', () => deleteHistoryItem(item.id));
+
+        historyList.appendChild(card);
+    });
+}
+
+async function deleteHistoryItem(id) {
+    try {
+        const res = await fetch(`/api/history/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+            showToast('Removed item from history', 'info');
+            const searchVal = historySearchInput ? historySearchInput.value.trim() : '';
+            loadHistory(searchVal);
+        }
+    } catch (e) {
+        showToast('Failed to delete item: ' + e.message, 'error');
+    }
+}
+
+async function clearAllHistory() {
+    if (!confirm('Are you sure you want to clear your entire download history? (Files on disk will remain safe)')) return;
+    try {
+        const res = await fetch('/api/history', { method: 'DELETE' });
+        if (res.ok) {
+            showToast('Download history cleared', 'success');
+            loadHistory();
+        }
+    } catch (e) {
+        showToast('Failed to clear history: ' + e.message, 'error');
+    }
+}
+
+if (historyClearBtn) historyClearBtn.addEventListener('click', clearAllHistory);
+
+if (historySearchInput) {
+    historySearchInput.addEventListener('input', (e) => {
+        clearTimeout(historySearchDebounce);
+        historySearchDebounce = setTimeout(() => {
+            loadHistory(e.target.value.trim());
+        }, 250);
+    });
 }

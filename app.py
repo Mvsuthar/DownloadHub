@@ -15,7 +15,7 @@ from typing import Optional
 
 import libtorrent as lt
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -514,6 +514,75 @@ async def fetch_torrent_info(req: MagnetRequest, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching torrent info: {str(e)}")
+
+
+@app.post("/api/torrent/upload-file")
+async def upload_torrent_file(file: UploadFile = File(...)):
+    """Upload a .torrent file and return its metadata."""
+    if not file.filename.lower().endswith(".torrent"):
+        raise HTTPException(status_code=400, detail="Only .torrent files are supported.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".torrent", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        ti = lt.torrent_info(tmp_path)
+    except Exception as exc:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise HTTPException(status_code=400, detail=f"Invalid .torrent file: {str(exc)}")
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+    torrent_id = str(ti.info_hash())
+    magnet_link = lt.make_magnet_uri(ti)
+
+    # Check active downloads first
+    if torrent_id in active_downloads:
+        handle = active_downloads[torrent_id]["handle"]
+        if handle.is_valid():
+            return _build_torrent_info_dict(ti, magnet_link, handle.status())
+
+    # Check if already in session
+    existing_handle = None
+    for h in ses.get_torrents():
+        if h.is_valid() and str(h.info_hash()) == torrent_id:
+            existing_handle = h
+            break
+
+    if existing_handle:
+        handle = existing_handle
+    else:
+        params = lt.add_torrent_params()
+        params.ti = ti
+        params.save_path = DOWNLOAD_DIR
+        params.flags |= lt.torrent_flags.upload_mode
+        handle = ses.add_torrent(params)
+        handle.set_flags(lt.torrent_flags.upload_mode)
+
+    info = _build_torrent_info_dict(ti, magnet_link, handle.status())
+
+    if len(metadata_cache) >= 100:
+        oldest_key = next(iter(metadata_cache))
+        metadata_cache.pop(oldest_key, None)
+
+    metadata_cache[torrent_id] = {
+        "info": info,
+        "handle": handle,
+        "fetched_at": time.time(),
+    }
+
+    return info
 
 
 @app.post("/api/torrent/download")

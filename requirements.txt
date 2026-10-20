@@ -6,3 +6,4 @@ yt-dlp
 libtorrent
 Pillow
 requests
+python-multipart

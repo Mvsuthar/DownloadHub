@@ -157,7 +157,14 @@ async function fetchVideoInfo() {
 
         videoData = data;
 
-        if (videoInfoThumb) videoInfoThumb.src = data.thumbnail || '';
+        if (videoInfoThumb) {
+            if (data.thumbnail) {
+                videoInfoThumb.src = data.thumbnail;
+                videoInfoThumb.style.display = 'block';
+            } else {
+                videoInfoThumb.style.display = 'none';
+            }
+        }
         if (videoInfoTitle) videoInfoTitle.textContent = data.title;
         
         const parts = [];
@@ -282,6 +289,22 @@ async function cancelVideoDownload() {
 }
 
 if (videoFetchBtn) videoFetchBtn.addEventListener('click', fetchVideoInfo);
+if ($('#video-paste-btn')) {
+    $('#video-paste-btn').addEventListener('click', async () => {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text && text.trim()) {
+                videoUrlInput.value = text.trim();
+                showToast('URL pasted from clipboard', 'info');
+                fetchVideoInfo();
+            } else {
+                showToast('Clipboard is empty', 'warning');
+            }
+        } catch (err) {
+            showToast('Unable to read clipboard. Please paste manually.', 'warning');
+        }
+    });
+}
 if (videoUrlInput) {
     videoUrlInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') fetchVideoInfo();
@@ -321,12 +344,103 @@ if (torrentMagnetInput) {
 }
 
 if (torrentFetchBtn) torrentFetchBtn.addEventListener('click', fetchTorrentInfo);
+if ($('#torrent-paste-btn')) {
+    $('#torrent-paste-btn').addEventListener('click', async () => {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text && text.trim()) {
+                torrentMagnetInput.value = text.trim();
+                showToast('Magnet link pasted from clipboard', 'info');
+                fetchTorrentInfo();
+            } else {
+                showToast('Clipboard is empty', 'warning');
+            }
+        } catch (err) {
+            showToast('Unable to read clipboard. Please paste manually.', 'warning');
+        }
+    });
+}
 if ($('#torrent-cancelFetchBtn')) $('#torrent-cancelFetchBtn').addEventListener('click', cancelTorrentFetch);
 if ($('#torrent-resetErrorBtn')) $('#torrent-resetErrorBtn').addEventListener('click', resetTorrentUI);
 if ($('#torrent-closeInfoBtn')) $('#torrent-closeInfoBtn').addEventListener('click', resetTorrentUI);
 if ($('#torrent-selectAllBtn')) $('#torrent-selectAllBtn').addEventListener('click', selectAllFiles);
 if ($('#torrent-deselectAllBtn')) $('#torrent-deselectAllBtn').addEventListener('click', deselectAllFiles);
 if ($('#torrent-downloadBtn')) $('#torrent-downloadBtn').addEventListener('click', startTorrentDownload);
+
+// Dropzone & File Input for .torrent
+const torrentDropzone = $('#torrent-dropzone');
+const torrentFileInput = $('#torrent-fileInput');
+
+if (torrentDropzone && torrentFileInput) {
+    torrentDropzone.addEventListener('click', () => torrentFileInput.click());
+
+    torrentDropzone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            torrentFileInput.click();
+        }
+    });
+
+    torrentDropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        torrentDropzone.classList.add('dragover');
+    });
+
+    torrentDropzone.addEventListener('dragleave', () => {
+        torrentDropzone.classList.remove('dragover');
+    });
+
+    torrentDropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        torrentDropzone.classList.remove('dragover');
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            handleTorrentFileUpload(e.dataTransfer.files[0]);
+        }
+    });
+
+    torrentFileInput.addEventListener('change', () => {
+        if (torrentFileInput.files && torrentFileInput.files.length > 0) {
+            handleTorrentFileUpload(torrentFileInput.files[0]);
+        }
+    });
+}
+
+async function handleTorrentFileUpload(file) {
+    if (!file.name.toLowerCase().endsWith('.torrent')) {
+        showToast('Please select a valid .torrent file.', 'warning');
+        return;
+    }
+
+    showTorrentSection('loading');
+    if (torrentFetchBtn) torrentFetchBtn.disabled = true;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch('/api/torrent/upload-file', {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Failed to parse .torrent file');
+        }
+
+        const data = await response.json();
+        torrentCurrentInfo = data;
+        displayTorrentInfo(data);
+        showTorrentSection('info');
+        showToast('Torrent file metadata loaded!', 'success');
+    } catch (err) {
+        showTorrentError('Upload Error', err.message);
+        showToast(err.message, 'error');
+    } finally {
+        if (torrentFetchBtn) torrentFetchBtn.disabled = false;
+        if (torrentFileInput) torrentFileInput.value = '';
+    }
+}
 
 // Batch pause / resume all
 if ($('#torrent-pauseAllBtn')) {

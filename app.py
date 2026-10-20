@@ -24,6 +24,7 @@ from sse_starlette.sse import EventSourceResponse
 
 # Video downloader imports
 from downloader import Downloader
+import history
 from utils import (
     format_bytes,
     format_duration,
@@ -33,12 +34,15 @@ from utils import (
     get_platform_name,
 )
 
-# ─── Configuration ───────────────────────────────────────────────────────────
+# ─── Configuration & Directories ─────────────────────────────────────────────
 
-# Torrent downloads go to ~/Downloads/Torrents
-DOWNLOAD_DIR = os.path.expanduser("~/Downloads/Torrents")
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-# Video downloads go to ~/Downloads (configured in utils.get_default_download_dir)
+def get_torrent_dir() -> str:
+    return history.get_config()["torrent_dir"]
+
+def get_video_dir() -> str:
+    return history.get_config()["video_dir"]
+
+DOWNLOAD_DIR = get_torrent_dir()
 
 # ─── Libtorrent Session (Global, High-Performance) ──────────────────────────
 
@@ -302,6 +306,7 @@ async def video_progress(task_id: str, request: Request):
                 "downloaded": format_bytes(task["downloaded"]),
                 "total": format_bytes(task["total"]) if task["total"] else None,
                 "filename": task["filename"],
+                "filepath": task.get("filepath"),
                 "error": task["error"],
             }
 
@@ -356,7 +361,7 @@ def _download_worker(task_id: str, url: str, format_id: str):
                 task["eta"] = None
 
     try:
-        output_dir = get_default_download_dir()
+        output_dir = get_video_dir()
 
         with _tasks_lock:
             if task_id in _tasks:
@@ -382,6 +387,17 @@ def _download_worker(task_id: str, url: str, format_id: str):
                 _tasks[task_id]["status"] = "complete"
                 _tasks[task_id]["percent"] = 100
                 _tasks[task_id]["filename"] = os.path.basename(path) if path else None
+                _tasks[task_id]["filepath"] = path
+
+        if path and os.path.exists(path):
+            file_size = os.path.getsize(path)
+            history.add_history(
+                title=os.path.basename(path),
+                item_type="video",
+                file_path=path,
+                file_size=file_size,
+                source_url=url,
+            )
 
     except Exception as exc:
         with _tasks_lock:
@@ -714,6 +730,18 @@ async def stream_progress(torrent_id: str, request: Request):
             yield {"event": "progress", "data": json.dumps(progress_data)}
 
             if state in ("finished", "seeding"):
+                if not entry.get("history_recorded"):
+                    entry["history_recorded"] = True
+                    save_path = entry.get("save_path", get_torrent_dir())
+                    name = status.name if status.name else "Torrent Download"
+                    target = os.path.join(save_path, name)
+                    history.add_history(
+                        title=name,
+                        item_type="torrent",
+                        file_path=target,
+                        file_size=status.total_wanted,
+                        source_url=entry.get("magnet_link", ""),
+                    )
                 yield {"event": "complete", "data": json.dumps(progress_data)}
                 break
 
@@ -915,18 +943,80 @@ async def get_torrent_details(torrent_id: str):
     }
 
 
+# ─── System, History & Configuration Endpoints ──────────────────────────────
+
+class PathRequest(BaseModel):
+    file_path: str
+
+
+class ConfigUpdateRequest(BaseModel):
+    video_dir: Optional[str] = None
+    torrent_dir: Optional[str] = None
+
+
+@app.get("/api/history")
+async def api_get_history(limit: int = 50, offset: int = 0, search: str = ""):
+    """Return persistent download history."""
+    items = history.get_history(limit=limit, offset=offset, search=search)
+    return {"history": items}
+
+
+@app.delete("/api/history/{item_id}")
+async def api_delete_history(item_id: int, delete_file: bool = False):
+    """Delete a history record and optionally delete the file on disk."""
+    success = history.delete_history_item(item_id, delete_file=delete_file)
+    if not success:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return {"success": True}
+
+
+@app.delete("/api/history")
+async def api_clear_history():
+    """Clear all history items."""
+    count = history.clear_all_history()
+    return {"cleared": count}
+
+
+@app.post("/api/system/open-file")
+async def api_open_file(req: PathRequest):
+    """Open a file with the system default application."""
+    if not os.path.exists(req.file_path):
+        raise HTTPException(status_code=404, detail="File does not exist on disk.")
+    success = history.open_file_path(req.file_path)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to open file on host system.")
+    return {"success": True}
+
+
+@app.post("/api/system/show-in-folder")
+async def api_show_in_folder(req: PathRequest):
+    """Reveal file in the system file manager."""
+    if not os.path.exists(req.file_path):
+        raise HTTPException(status_code=404, detail="File or folder does not exist on disk.")
+    success = history.show_in_folder(req.file_path)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to open file manager.")
+    return {"success": True}
+
+
+@app.get("/api/system/config")
+async def api_get_config():
+    """Return active directories and configuration."""
+    return history.get_config()
+
+
+@app.post("/api/system/config")
+async def api_update_config(req: ConfigUpdateRequest):
+    """Update active download directories."""
+    updated = history.save_config(video_dir=req.video_dir, torrent_dir=req.torrent_dir)
+    return updated
+
+
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("🚀 DownloadHub starting on http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
-
-"""
-magnet:?xt=urn:btih:764755a78be4e3de21389f7eac205a87363be638&dn=Your%20Irresistible%20Real%20Estate%20Agent,%20Solazola%20(LifeSelector)%202026%20WEB-DL%20720p&tr=udp://tracker.torrent.eu.org:451/announce&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://open.stealth.si:80/announce&tr=udp://tracker.bittor.pw:1337/announce&tr=udp://explodie.org:6969/announce&tr=udp://tracker.dler.org:6969/announce&tr=udp://open.demonii.com:1337/announce&tr=udp://exodus.desync.com:6969/announce&tr=udp://tracker.filemail.com:6969/announce&tr=udp://tracker.tryhackx.org:6969/announce&tr=udp://tracker.qu.ax:6969/announce&tr=udp://tracker.opentorrent.top:6969/announce&tr=udp://udp.tracker.projectk.org:23333/announce&tr=udp://martin-gebhardt.eu:6969/announce
-magnet:?xt=urn:btih:67172a508b3a606e67ecd27e6ed3305185aa4696&dn=Sibling%20Secrets%2024%20(Porn%20Pros)%202026%20WEB-DL%201080p&tr=udp://tracker.torrent.eu.org:451/announce&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://open.stealth.si:80/announce&tr=udp://tracker.bittor.pw:1337/announce&tr=udp://explodie.org:6969/announce&tr=udp://tracker.dler.org:6969/announce&tr=udp://open.demonii.com:1337/announce&tr=udp://exodus.desync.com:6969/announce&tr=udp://tracker.filemail.com:6969/announce&tr=udp://tracker.tryhackx.org:6969/announce&tr=udp://tracker.qu.ax:6969/announce&tr=udp://tracker.opentorrent.top:6969/announce&tr=udp://udp.tracker.projectk.org:23333/announce&tr=udp://martin-gebhardt.eu:6969/announce
-magnet:?xt=urn:btih:afdfdd104eb4438d31fb33b116f2cc7c26336e14&dn=Heatwave%202%20[Vixen]%20(2026)%20HD%20720p%20Split%20Scenes&tr=udp://tracker.torrent.eu.org:451/announce&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://open.stealth.si:80/announce&tr=udp://tracker.bittor.pw:1337/announce&tr=udp://explodie.org:6969/announce&tr=udp://tracker.dler.org:6969/announce&tr=udp://open.demonii.com:1337/announce&tr=udp://exodus.desync.com:6969/announce&tr=udp://tracker.filemail.com:6969/announce&tr=udp://tracker.tryhackx.org:6969/announce&tr=udp://tracker.qu.ax:6969/announce&tr=udp://tracker.opentorrent.top:6969/announce&tr=udp://udp.tracker.projectk.org:23333/announce&tr=udp://martin-gebhardt.eu:6969/announce
-magnet:?xt=urn:btih:9143f0a7625cfa25bbffaeb19703b99f95e7b299&dn=Virgin%20Wishes%20[Zero%20Tolerance]%20(2024)%20HD%20720p%20Split%20Scenes&tr=udp://tracker.torrent.eu.org:451/announce&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://open.stealth.si:80/announce&tr=udp://tracker.bittor.pw:1337/announce&tr=udp://explodie.org:6969/announce&tr=udp://tracker.dler.org:6969/announce&tr=udp://open.demonii.com:1337/announce&tr=udp://exodus.desync.com:6969/announce&tr=udp://tracker.filemail.com:6969/announce&tr=udp://tracker.tryhackx.org:6969/announce&tr=udp://tracker.qu.ax:6969/announce&tr=udp://tracker.opentorrent.top:6969/announce&tr=udp://udp.tracker.projectk.org:23333/announce&tr=udp://martin-gebhardt.eu:6969/announce
-"""
 
 

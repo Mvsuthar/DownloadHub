@@ -56,6 +56,13 @@
                     <span id="torrent-activeCount">0</span> Active
                 </div>
 
+                <button id="header-speed-limit-btn" type="button" class="stat-chip btn-icon-chip" title="Bandwidth Limiter (Throttle Speed)" aria-label="Bandwidth Limiter">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                    </svg>
+                    <span id="speed-limit-label">Unlimited</span>
+                </button>
+
                 <button id="header-settings-btn" type="button" class="stat-chip btn-icon-chip" title="Preferences & Download Folders" aria-label="Settings">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"/>
@@ -349,6 +356,39 @@
             <div class="modal-footer mt-4">
                 <button id="cancel-settings-btn" type="button" class="btn btn-secondary">Cancel</button>
                 <button id="save-settings-btn" type="button" class="btn btn-primary">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Speed Limiter Modal -->
+    <div id="speed-limiter-modal" class="modal-backdrop" hidden>
+        <div class="modal-card glass-card" style="max-width: 440px;">
+            <div class="modal-header">
+                <h2>⚡ Bandwidth Limiter</h2>
+                <button id="close-speed-limiter-btn" type="button" class="btn btn-close" aria-label="Close speed limits">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="input-hint mb-3">Throttle torrent download speed to preserve bandwidth for gaming or browsing.</p>
+                <div class="speed-presets-grid mt-2 mb-3">
+                    <button type="button" class="speed-preset-btn active" data-speed="0">⚡ Unlimited</button>
+                    <button type="button" class="speed-preset-btn" data-speed="1024">1 MB/s</button>
+                    <button type="button" class="speed-preset-btn" data-speed="3072">3 MB/s</button>
+                    <button type="button" class="speed-preset-btn" data-speed="5120">5 MB/s</button>
+                    <button type="button" class="speed-preset-btn" data-speed="10240">10 MB/s</button>
+                    <button type="button" class="speed-preset-btn" data-speed="20480">20 MB/s</button>
+                </div>
+                <div class="form-group mt-3">
+                    <label class="card__label" for="custom-speed-input">Custom Download Limit (KB/s, 0 = Unlimited)</label>
+                    <input type="number" id="custom-speed-input" class="url-input" min="0" step="128" placeholder="0">
+                </div>
+                <div class="form-group mt-3">
+                    <label class="card__label" for="custom-upload-input">Custom Upload Limit (KB/s, 0 = Unlimited)</label>
+                    <input type="number" id="custom-upload-input" class="url-input" min="0" step="64" placeholder="0">
+                </div>
+            </div>
+            <div class="modal-footer mt-4">
+                <button id="cancel-speed-limiter-btn" type="button" class="btn btn-secondary">Cancel</button>
+                <button id="save-speed-limiter-btn" type="button" class="btn btn-primary">Apply Limits</button>
             </div>
         </div>
     </div>

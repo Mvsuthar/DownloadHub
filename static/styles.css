@@ -1091,3 +1091,134 @@ body {
     font-size: 0.88rem;
 }
 
+/* ─── Phase 2: Bandwidth Presets & Telemetry Drawer ──────────────────────── */
+
+.speed-presets-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+.speed-preset-btn {
+    padding: 8px 10px;
+    background: var(--bg-surface-subtle);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.speed-preset-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface-hover);
+    border-color: var(--border-default);
+}
+
+.speed-preset-btn.active {
+    color: #fff;
+    background: rgba(99, 102, 241, 0.25);
+    border-color: var(--primary-indigo);
+    box-shadow: 0 0 10px rgba(99, 102, 241, 0.2);
+}
+
+/* Torrent Drawer & Telemetry */
+.torrent-drawer-toggle {
+    margin-top: 10px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.torrent-drawer {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-subtle);
+    animation: drawerSlideDown 200ms ease-out;
+}
+
+@keyframes drawerSlideDown {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.drawer-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: 8px;
+}
+
+.drawer-tab-btn {
+    padding: 5px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: var(--radius-xs);
+    transition: all var(--transition-fast);
+}
+
+.drawer-tab-btn:hover {
+    color: var(--text-secondary);
+}
+
+.drawer-tab-btn.active {
+    color: var(--primary-cyan);
+    background: rgba(6, 182, 212, 0.12);
+}
+
+.drawer-panel {
+    display: none;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.drawer-panel.active {
+    display: block;
+}
+
+.drawer-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+    text-align: left;
+}
+
+.drawer-table th {
+    padding: 6px 10px;
+    color: var(--text-muted);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.drawer-table td {
+    padding: 6px 10px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.drawer-table tr:hover td {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.priority-select {
+    padding: 3px 8px;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xs);
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    outline: none;
+    cursor: pointer;
+}
+
+.priority-select:focus {
+    border-color: var(--primary-indigo);
+}
+

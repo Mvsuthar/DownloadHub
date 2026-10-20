@@ -46,11 +46,15 @@ DOWNLOAD_DIR = get_torrent_dir()
 
 # ─── Libtorrent Session (Global, High-Performance) ──────────────────────────
 
+_initial_cfg = history.get_config()
+_init_dl_lim = _initial_cfg.get("download_limit_kb", 0) * 1024
+_init_ul_lim = _initial_cfg.get("upload_limit_kb", 0) * 1024
+
 settings = {
     "user_agent": "DownloadHub/1.0",
     "listen_interfaces": "0.0.0.0:6881,[::]:6881",
-    "download_rate_limit": 0,        # unlimited
-    "upload_rate_limit": 0,           # unlimited
+    "download_rate_limit": _init_dl_lim,
+    "upload_rate_limit": _init_ul_lim,
     "connections_limit": 500,
     "active_downloads": 8,
     "active_seeds": 4,
@@ -941,6 +945,131 @@ async def get_torrent_details(torrent_id: str):
         "name": status.name if status.name else "Fetching metadata...",
         "files": file_progress
     }
+
+
+# ─── Bandwidth Limits & Peer/Tracker Telemetry Endpoints ─────────────────────
+
+class SpeedLimitRequest(BaseModel):
+    download_limit_kb: int = 0
+    upload_limit_kb: int = 0
+
+
+class FilePriorityRequest(BaseModel):
+    file_index: int
+    priority: int
+
+
+@app.get("/api/torrent/settings/speed-limits")
+async def get_speed_limits():
+    """Get current session speed limits in KB/s."""
+    cfg = history.get_config()
+    return {
+        "download_limit_kb": cfg.get("download_limit_kb", 0),
+        "upload_limit_kb": cfg.get("upload_limit_kb", 0),
+    }
+
+
+@app.post("/api/torrent/settings/speed-limits")
+async def set_speed_limits(req: SpeedLimitRequest):
+    """Set global session speed limits (KB/s, 0 = unlimited)."""
+    dl_bytes = max(0, int(req.download_limit_kb)) * 1024
+    ul_bytes = max(0, int(req.upload_limit_kb)) * 1024
+    ses.apply_settings({
+        "download_rate_limit": dl_bytes,
+        "upload_rate_limit": ul_bytes,
+    })
+    updated = history.save_config(
+        download_limit_kb=req.download_limit_kb,
+        upload_limit_kb=req.upload_limit_kb,
+    )
+    return {
+        "success": True,
+        "download_limit_kb": updated.get("download_limit_kb", 0),
+        "upload_limit_kb": updated.get("upload_limit_kb", 0),
+    }
+
+
+@app.post("/api/torrent/download/{torrent_id}/file-priority")
+async def set_file_priority(torrent_id: str, req: FilePriorityRequest):
+    """Set download priority for an individual file (0=skip, 1-7=priority)."""
+    if torrent_id not in active_downloads:
+        raise HTTPException(status_code=404, detail="Torrent not found")
+
+    handle = active_downloads[torrent_id]["handle"]
+    if not handle.is_valid():
+        raise HTTPException(status_code=400, detail="Invalid torrent handle")
+
+    try:
+        handle.file_priority(int(req.file_index), int(req.priority))
+        return {"success": True, "file_index": req.file_index, "priority": req.priority}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/torrent/download/{torrent_id}/peers")
+async def get_torrent_peers(torrent_id: str):
+    """Retrieve connected peer list for an active torrent."""
+    if torrent_id not in active_downloads:
+        raise HTTPException(status_code=404, detail="Torrent not found")
+
+    handle = active_downloads[torrent_id]["handle"]
+    if not handle.is_valid():
+        return {"peers": [], "total": 0}
+
+    try:
+        peer_list = handle.get_peer_info()
+    except Exception as exc:
+        return {"peers": [], "total": 0, "error": str(exc)}
+
+    peers_data = []
+    for p in peer_list:
+        try:
+            client_name = p.client.decode("utf-8", errors="ignore") if isinstance(p.client, bytes) else str(p.client)
+            if not client_name:
+                client_name = "Peer"
+            ip_str = f"{p.ip[0]}:{p.ip[1]}" if isinstance(p.ip, (tuple, list)) else str(p.ip)
+            peers_data.append({
+                "ip": ip_str,
+                "client": client_name,
+                "down_speed": p.down_speed,
+                "down_speed_formatted": format_size(p.down_speed) + "/s",
+                "up_speed": p.up_speed,
+                "up_speed_formatted": format_size(p.up_speed) + "/s",
+                "progress": round(p.progress * 100, 1),
+            })
+        except Exception:
+            continue
+
+    return {"peers": peers_data, "total": len(peers_data)}
+
+
+@app.get("/api/torrent/download/{torrent_id}/trackers")
+async def get_torrent_trackers(torrent_id: str):
+    """Retrieve tracker list and statuses for an active torrent."""
+    if torrent_id not in active_downloads:
+        raise HTTPException(status_code=404, detail="Torrent not found")
+
+    handle = active_downloads[torrent_id]["handle"]
+    if not handle.is_valid():
+        return {"trackers": [], "total": 0}
+
+    try:
+        trackers_list = handle.trackers()
+    except Exception as exc:
+        return {"trackers": [], "total": 0, "error": str(exc)}
+
+    trackers_data = []
+    for t in trackers_list:
+        try:
+            trackers_data.append({
+                "url": t.url,
+                "tier": t.tier,
+                "verified": getattr(t, "verified", False),
+            })
+        except Exception:
+            continue
+
+    return {"trackers": trackers_data, "total": len(trackers_data)}
 
 
 # ─── System, History & Configuration Endpoints ──────────────────────────────

@@ -682,6 +682,7 @@ function createTorrentDownloadCard(torrentId, name) {
                 <span class="state-badge downloading_metadata" id="torrent-state-${torrentId}">connecting</span>
             </div>
             <div class="download-card-controls">
+                <button class="btn-icon drawer-toggle-btn" id="torrent-drawer-toggle-${torrentId}" title="Inspect Details (Files, Peers, Trackers)">📊</button>
                 <button class="btn-icon pause-btn" id="torrent-pause-${torrentId}" title="Pause">⏸</button>
                 <button class="btn-icon cancel-btn" id="torrent-cancel-${torrentId}" title="Cancel">✕</button>
             </div>
@@ -709,6 +710,24 @@ function createTorrentDownloadCard(torrentId, name) {
                 <div class="value" id="torrent-peers-${torrentId}">0</div>
             </div>
         </div>
+
+        <!-- Telemetry Drawer (Phase 2) -->
+        <div class="torrent-drawer" id="torrent-drawer-${torrentId}" hidden>
+            <div class="drawer-tabs">
+                <button type="button" class="drawer-tab-btn active" data-drawer-tab="files" data-torrent-id="${torrentId}">Files (<span id="drawer-files-count-${torrentId}">0</span>)</button>
+                <button type="button" class="drawer-tab-btn" data-drawer-tab="peers" data-torrent-id="${torrentId}">Peers (<span id="drawer-peers-count-${torrentId}">0</span>)</button>
+                <button type="button" class="drawer-tab-btn" data-drawer-tab="trackers" data-torrent-id="${torrentId}">Trackers (<span id="drawer-trackers-count-${torrentId}">0</span>)</button>
+            </div>
+            <div class="drawer-panel active" id="drawer-panel-files-${torrentId}">
+                <div class="drawer-files-content" id="drawer-files-content-${torrentId}">Loading files...</div>
+            </div>
+            <div class="drawer-panel" id="drawer-panel-peers-${torrentId}">
+                <div class="drawer-peers-content" id="drawer-peers-content-${torrentId}">Loading peers...</div>
+            </div>
+            <div class="drawer-panel" id="drawer-panel-trackers-${torrentId}">
+                <div class="drawer-trackers-content" id="drawer-trackers-content-${torrentId}">Loading trackers...</div>
+            </div>
+        </div>
     `;
 
     torrentDownloadsList.prepend(card);
@@ -716,6 +735,15 @@ function createTorrentDownloadCard(torrentId, name) {
 
     card.querySelector('.pause-btn').addEventListener('click', () => toggleTorrentPause(torrentId));
     card.querySelector('.cancel-btn').addEventListener('click', () => cancelTorrentDownload(torrentId));
+    card.querySelector('.drawer-toggle-btn').addEventListener('click', () => toggleTorrentDrawer(torrentId));
+
+    // Drawer tab switching
+    card.querySelectorAll('.drawer-tab-btn').forEach(tabBtn => {
+        tabBtn.addEventListener('click', (e) => {
+            const targetTab = e.currentTarget.getAttribute('data-drawer-tab');
+            switchDrawerTab(torrentId, targetTab);
+        });
+    });
 
     updateTorrentActiveCount();
 }
@@ -908,6 +936,7 @@ function getFileName(path) {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadExistingTorrentDownloads();
+    loadSpeedLimits();
 
     // Wire completed video action buttons
     const videoOpenFileBtn = $('#video-open-file-btn');
@@ -1162,4 +1191,324 @@ if (historySearchInput) {
             loadHistory(e.target.value.trim());
         }, 250);
     });
+}
+
+// ─── SPEED LIMITER ENGINE (PHASE 2) ─────────────────────────────────────────
+
+const headerSpeedLimitBtn = $('#header-speed-limit-btn');
+const speedLimitLabel = $('#speed-limit-label');
+const speedLimiterModal = $('#speed-limiter-modal');
+const closeSpeedLimiterBtn = $('#close-speed-limiter-btn');
+const cancelSpeedLimiterBtn = $('#cancel-speed-limiter-btn');
+const saveSpeedLimiterBtn = $('#save-speed-limiter-btn');
+const customSpeedInput = $('#custom-speed-input');
+const customUploadInput = $('#custom-upload-input');
+const speedPresetBtns = $$('.speed-preset-btn');
+
+async function loadSpeedLimits() {
+    try {
+        const res = await fetch('/api/torrent/settings/speed-limits');
+        if (!res.ok) return;
+        const data = await res.json();
+        updateSpeedLimitBadge(data.download_limit_kb);
+        if (customSpeedInput) customSpeedInput.value = data.download_limit_kb || 0;
+        if (customUploadInput) customUploadInput.value = data.upload_limit_kb || 0;
+        highlightActivePreset(data.download_limit_kb);
+    } catch (e) {
+        console.error('Failed to load speed limits:', e);
+    }
+}
+
+function updateSpeedLimitBadge(dlKb) {
+    if (!speedLimitLabel) return;
+    if (!dlKb || dlKb === 0) {
+        speedLimitLabel.textContent = 'Unlimited';
+    } else if (dlKb >= 1024) {
+        speedLimitLabel.textContent = `${(dlKb / 1024).toFixed(0)} MB/s`;
+    } else {
+        speedLimitLabel.textContent = `${dlKb} KB/s`;
+    }
+}
+
+function highlightActivePreset(dlKb) {
+    speedPresetBtns.forEach(btn => {
+        const speed = parseInt(btn.getAttribute('data-speed'), 10);
+        if (speed === (dlKb || 0)) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+}
+
+function openSpeedLimiterModal() {
+    loadSpeedLimits();
+    if (speedLimiterModal) speedLimiterModal.removeAttribute('hidden');
+}
+
+function closeSpeedLimiterModal() {
+    if (speedLimiterModal) speedLimiterModal.setAttribute('hidden', '');
+}
+
+async function saveSpeedLimits() {
+    const dlKb = customSpeedInput ? parseInt(customSpeedInput.value || '0', 10) : 0;
+    const ulKb = customUploadInput ? parseInt(customUploadInput.value || '0', 10) : 0;
+
+    try {
+        const res = await fetch('/api/torrent/settings/speed-limits', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ download_limit_kb: dlKb, upload_limit_kb: ulKb }),
+        });
+        if (res.ok) {
+            updateSpeedLimitBadge(dlKb);
+            highlightActivePreset(dlKb);
+            showToast(dlKb === 0 ? 'Speed limit removed (Unlimited)' : `Bandwidth limit set to ${dlKb} KB/s`, 'success');
+            closeSpeedLimiterModal();
+        } else {
+            showToast('Failed to apply speed limits.', 'error');
+        }
+    } catch (e) {
+        showToast('Error applying speed limits: ' + e.message, 'error');
+    }
+}
+
+speedPresetBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        speedPresetBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const speed = btn.getAttribute('data-speed');
+        if (customSpeedInput) customSpeedInput.value = speed;
+    });
+});
+
+if (headerSpeedLimitBtn) headerSpeedLimitBtn.addEventListener('click', openSpeedLimiterModal);
+if (closeSpeedLimiterBtn) closeSpeedLimiterBtn.addEventListener('click', closeSpeedLimiterModal);
+if (cancelSpeedLimiterBtn) cancelSpeedLimiterBtn.addEventListener('click', closeSpeedLimiterModal);
+if (saveSpeedLimiterBtn) saveSpeedLimiterBtn.addEventListener('click', saveSpeedLimits);
+
+if (speedLimiterModal) {
+    speedLimiterModal.addEventListener('click', (e) => {
+        if (e.target === speedLimiterModal) closeSpeedLimiterModal();
+    });
+}
+
+// ─── TORRENT TELEMETRY & DRAWER ENGINE (PHASE 2) ────────────────────────────
+
+const torrentDrawerPollIntervals = {};
+
+function toggleTorrentDrawer(torrentId) {
+    const drawer = $(`#torrent-drawer-${torrentId}`);
+    if (!drawer) return;
+
+    const isHidden = drawer.hasAttribute('hidden');
+    if (isHidden) {
+        drawer.removeAttribute('hidden');
+        fetchTorrentTelemetry(torrentId);
+        // Start live polling every 2.5 seconds
+        if (!torrentDrawerPollIntervals[torrentId]) {
+            torrentDrawerPollIntervals[torrentId] = setInterval(() => {
+                fetchTorrentTelemetry(torrentId);
+            }, 2500);
+        }
+    } else {
+        drawer.setAttribute('hidden', '');
+        if (torrentDrawerPollIntervals[torrentId]) {
+            clearInterval(torrentDrawerPollIntervals[torrentId]);
+            delete torrentDrawerPollIntervals[torrentId];
+        }
+    }
+}
+
+function switchDrawerTab(torrentId, tabName) {
+    const card = torrentDownloadCards[torrentId];
+    if (!card) return;
+
+    card.querySelectorAll('.drawer-tab-btn').forEach(btn => {
+        if (btn.getAttribute('data-drawer-tab') === tabName) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+
+    const panels = card.querySelectorAll('.drawer-panel');
+    panels.forEach(panel => {
+        if (panel.id === `drawer-panel-${tabName}-${torrentId}`) {
+            panel.classList.add('active');
+        } else {
+            panel.classList.remove('active');
+        }
+    });
+}
+
+async function fetchTorrentTelemetry(torrentId) {
+    try {
+        const [detailsRes, peersRes, trackersRes] = await Promise.all([
+            fetch(`/api/torrent/download/${torrentId}/details`),
+            fetch(`/api/torrent/download/${torrentId}/peers`),
+            fetch(`/api/torrent/download/${torrentId}/trackers`),
+        ]);
+
+        if (detailsRes.ok) {
+            const data = await detailsRes.json();
+            renderDrawerFiles(torrentId, data.files || []);
+        }
+
+        if (peersRes.ok) {
+            const data = await peersRes.json();
+            renderDrawerPeers(torrentId, data.peers || []);
+        }
+
+        if (trackersRes.ok) {
+            const data = await trackersRes.json();
+            renderDrawerTrackers(torrentId, data.trackers || []);
+        }
+    } catch (e) {
+        // Silent poll error catch
+    }
+}
+
+function renderDrawerFiles(torrentId, files) {
+    const container = $(`#drawer-files-content-${torrentId}`);
+    const countEl = $(`#drawer-files-count-${torrentId}`);
+    if (countEl) countEl.textContent = files.length;
+    if (!container) return;
+
+    if (!files || files.length === 0) {
+        container.innerHTML = '<div style="padding: 10px; color: var(--text-muted);">Fetching file list from swarm...</div>';
+        return;
+    }
+
+    let html = `
+        <table class="drawer-table">
+            <thead>
+                <tr>
+                    <th style="width: 45%;">File</th>
+                    <th>Size</th>
+                    <th>Progress</th>
+                    <th>Priority</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    files.forEach(f => {
+        html += `
+            <tr>
+                <td title="${escapeHtml(f.path)}">${escapeHtml(f.name)}</td>
+                <td>${f.size_formatted}</td>
+                <td>${f.progress}%</td>
+                <td>
+                    <select class="priority-select" data-torrent-id="${torrentId}" data-file-index="${f.index}">
+                        <option value="1" ${f.priority === 1 || f.priority === 4 ? 'selected' : ''}>Normal</option>
+                        <option value="7" ${f.priority === 7 ? 'selected' : ''}>High</option>
+                        <option value="0" ${f.priority === 0 ? 'selected' : ''}>Skip</option>
+                    </select>
+                </td>
+            </tr>
+        `;
+    });
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+
+    // Attach priority change listener
+    container.querySelectorAll('.priority-select').forEach(sel => {
+        sel.addEventListener('change', async (e) => {
+            const fIdx = parseInt(e.target.getAttribute('data-file-index'), 10);
+            const prio = parseInt(e.target.value, 10);
+            try {
+                const res = await fetch(`/api/torrent/download/${torrentId}/file-priority`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_index: fIdx, priority: prio }),
+                });
+                if (res.ok) {
+                    showToast(`File priority set to ${prio === 0 ? 'Skip' : prio === 7 ? 'High' : 'Normal'}`, 'info');
+                }
+            } catch (err) {
+                showToast('Failed to change file priority', 'error');
+            }
+        });
+    });
+}
+
+function renderDrawerPeers(torrentId, peers) {
+    const container = $(`#drawer-peers-content-${torrentId}`);
+    const countEl = $(`#drawer-peers-count-${torrentId}`);
+    if (countEl) countEl.textContent = peers.length;
+    if (!container) return;
+
+    if (!peers || peers.length === 0) {
+        container.innerHTML = '<div style="padding: 10px; color: var(--text-muted);">Searching for connected peers via DHT & trackers...</div>';
+        return;
+    }
+
+    let html = `
+        <table class="drawer-table">
+            <thead>
+                <tr>
+                    <th>Peer Endpoint</th>
+                    <th>Client</th>
+                    <th>↓ Down Speed</th>
+                    <th>↑ Up Speed</th>
+                    <th>Progress</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    peers.forEach(p => {
+        html += `
+            <tr>
+                <td>${escapeHtml(p.ip)}</td>
+                <td>${escapeHtml(p.client)}</td>
+                <td>${p.down_speed_formatted}</td>
+                <td>${p.up_speed_formatted}</td>
+                <td>${p.progress}%</td>
+            </tr>
+        `;
+    });
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+function renderDrawerTrackers(torrentId, trackers) {
+    const container = $(`#drawer-trackers-content-${torrentId}`);
+    const countEl = $(`#drawer-trackers-count-${torrentId}`);
+    if (countEl) countEl.textContent = trackers.length;
+    if (!container) return;
+
+    if (!trackers || trackers.length === 0) {
+        container.innerHTML = '<div style="padding: 10px; color: var(--text-muted);">No trackers registered for this swarm.</div>';
+        return;
+    }
+
+    let html = `
+        <table class="drawer-table">
+            <thead>
+                <tr>
+                    <th>Tier</th>
+                    <th>Tracker Announce URL</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    trackers.forEach(t => {
+        const verifiedBadge = t.verified ? '<span style="color: var(--primary-emerald);">✔ Verified</span>' : '<span style="color: var(--text-muted);">Registered</span>';
+        html += `
+            <tr>
+                <td>Tier ${t.tier}</td>
+                <td title="${escapeHtml(t.url)}">${escapeHtml(t.url)}</td>
+                <td>${verifiedBadge}</td>
+            </tr>
+        `;
+    });
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
 }

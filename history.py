@@ -138,6 +138,8 @@ def get_config() -> dict:
     config = {
         "video_dir": DEFAULT_VIDEO_DIR,
         "torrent_dir": DEFAULT_TORRENT_DIR,
+        "download_limit_kb": 0,
+        "upload_limit_kb": 0,
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -153,7 +155,12 @@ def get_config() -> dict:
     return config
 
 
-def save_config(video_dir: Optional[str] = None, torrent_dir: Optional[str] = None) -> dict:
+def save_config(
+    video_dir: Optional[str] = None,
+    torrent_dir: Optional[str] = None,
+    download_limit_kb: Optional[int] = None,
+    upload_limit_kb: Optional[int] = None,
+) -> dict:
     """Update and persist configuration."""
     current = get_config()
     if video_dir:
@@ -165,6 +172,12 @@ def save_config(video_dir: Optional[str] = None, torrent_dir: Optional[str] = No
         t_path = os.path.expanduser(torrent_dir.strip())
         os.makedirs(t_path, exist_ok=True)
         current["torrent_dir"] = t_path
+
+    if download_limit_kb is not None:
+        current["download_limit_kb"] = max(0, int(download_limit_kb))
+
+    if upload_limit_kb is not None:
+        current["upload_limit_kb"] = max(0, int(upload_limit_kb))
 
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(current, f, indent=2)

@@ -134,6 +134,18 @@
                         <label class="card__label" for="video-quality-select">Quality / Format</label>
                         <select id="video-quality-select" class="select"></select>
                     </div>
+                    <div id="video-subtitle-container" class="option-group" style="display: none;">
+                        <label class="card__label" for="video-subtitle-select">Subtitles</label>
+                        <select id="video-subtitle-select" class="select">
+                            <option value="">None (No Subtitles)</option>
+                        </select>
+                    </div>
+                    <div id="video-embed-subs-container" class="option-group" style="display: none; align-self: flex-end; padding-bottom: 6px;">
+                        <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer; color: var(--text-secondary);">
+                            <input type="checkbox" id="video-embed-subs-check" checked style="accent-color: var(--accent);">
+                            <span>Embed Subtitles</span>
+                        </label>
+                    </div>
                     <div class="option-group">
                         <label class="card__label">Save Location</label>
                         <span class="folder-path">~/Downloads</span>
@@ -160,7 +172,8 @@
                     <span id="video-stat-size"></span>
                 </div>
                 <div id="video-complete-actions" class="complete-actions mt-3" hidden>
-                    <button id="video-open-file-btn" type="button" class="btn btn-primary btn-sm">▶ Open File</button>
+                    <button id="video-play-btn" type="button" class="btn btn-primary btn-sm">▶ Play in Browser</button>
+                    <button id="video-open-file-btn" type="button" class="btn btn-secondary btn-sm">▶ Open File</button>
                     <button id="video-show-folder-btn" type="button" class="btn btn-secondary btn-sm">📁 Show in Folder</button>
                 </div>
                 <button id="video-cancel-btn" type="button" class="btn btn-danger mt-3" aria-label="Cancel download">✕ Cancel Download</button>
@@ -389,6 +402,40 @@
             <div class="modal-footer mt-4">
                 <button id="cancel-speed-limiter-btn" type="button" class="btn btn-secondary">Cancel</button>
                 <button id="save-speed-limiter-btn" type="button" class="btn btn-primary">Apply Limits</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- In-Browser Media Player Modal -->
+    <div id="player-modal" class="modal-backdrop" hidden>
+        <div class="modal-card glass-card player-modal-card">
+            <div class="modal-header">
+                <div class="player-title-box">
+                    <span class="player-icon">🎬</span>
+                    <h2 id="player-modal-title" class="player-heading">Media Stream</h2>
+                    <span id="player-stream-badge" class="badge-stream">STREAMING</span>
+                </div>
+                <button id="close-player-btn" type="button" class="btn btn-close" aria-label="Close media player">✕</button>
+            </div>
+            <div class="modal-body player-modal-body">
+                <div id="player-buffer-alert" class="player-buffer-alert" style="display: none;">
+                    <span class="spinner-small">⌛</span>
+                    <span id="player-buffer-msg">Buffering media pieces from torrent peers...</span>
+                </div>
+                <div class="video-container">
+                    <video id="media-player-video" controls playsinline preload="metadata">
+                        Your browser does not support HTML5 video streaming.
+                    </video>
+                </div>
+            </div>
+            <div class="modal-footer player-modal-footer">
+                <div class="player-footer-left">
+                    <span id="player-media-format" class="format-badge">H.264 / AAC</span>
+                </div>
+                <div class="player-footer-right">
+                    <button id="player-open-file-btn" type="button" class="btn btn-secondary btn-sm" style="display: none;">▶ Open in External App</button>
+                    <button id="player-done-btn" type="button" class="btn btn-primary btn-sm">Done</button>
+                </div>
             </div>
         </div>
     </div>

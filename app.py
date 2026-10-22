@@ -7,6 +7,7 @@ Combines Video Downloader and Torrent Downloader into a single backend.
 import asyncio
 import hashlib
 import json
+import mimetypes
 import os
 import threading
 import time
@@ -128,6 +129,9 @@ class VideoFetchRequest(BaseModel):
 class VideoDownloadRequest(BaseModel):
     url: str
     format_id: str = "best"
+    filename: Optional[str] = None
+    subtitles_lang: Optional[str] = None
+    embed_subtitles: bool = False
 
 class MagnetRequest(BaseModel):
     magnet_link: str
@@ -135,6 +139,10 @@ class MagnetRequest(BaseModel):
 class TorrentDownloadRequest(BaseModel):
     magnet_link: str
     selected_files: Optional[list[int]] = None  # indices of files to download
+
+class SequentialTorrentRequest(BaseModel):
+    sequential: bool = True
+    file_index: Optional[int] = None
 
 
 # ─── Utility Functions (Torrent) ─────────────────────────────────────────────
@@ -241,6 +249,7 @@ async def video_fetch(req: VideoFetchRequest):
         "url": info.url,
         "platform": get_platform_name(url),
         "formats": info.formats,
+        "subtitles": info.subtitles,
     }
 
 
@@ -267,7 +276,16 @@ async def video_download(req: VideoDownloadRequest):
         }
 
     thread = threading.Thread(
-        target=_download_worker, args=(task_id, url, format_id), daemon=True
+        target=_download_worker,
+        args=(
+            task_id,
+            url,
+            format_id,
+            req.filename,
+            req.subtitles_lang,
+            req.embed_subtitles,
+        ),
+        daemon=True,
     )
     thread.start()
 
@@ -328,7 +346,14 @@ async def video_progress(task_id: str, request: Request):
 
 
 # ── Download worker (runs in background thread) ──────────────────────────
-def _download_worker(task_id: str, url: str, format_id: str):
+def _download_worker(
+    task_id: str,
+    url: str,
+    format_id: str,
+    filename: Optional[str] = None,
+    subtitles_lang: Optional[str] = None,
+    embed_subtitles: bool = False,
+):
     """Execute the download and update the task store."""
     def progress_hook(d: dict):
         with _tasks_lock:
@@ -383,7 +408,10 @@ def _download_worker(task_id: str, url: str, format_id: str):
             output_dir=output_dir,
             format_id=format_id,
             progress_hook=progress_hook,
+            filename=filename,
             status_callback=status_callback,
+            subtitles_lang=subtitles_lang,
+            embed_subtitles=embed_subtitles,
         )
 
         with _tasks_lock:
@@ -1070,6 +1098,145 @@ async def get_torrent_trackers(torrent_id: str):
             continue
 
     return {"trackers": trackers_data, "total": len(trackers_data)}
+
+
+# ─── Sequential Downloading & In-Browser Streaming Endpoints ────────────────
+
+def _prioritize_stream_pieces(handle, file_index: int):
+    """Prioritize the initial and final pieces of a torrent file for video streaming headers."""
+    try:
+        ti = handle.torrent_file()
+        fs = ti.files()
+        if 0 <= file_index < fs.num_files():
+            start_offset = fs.file_offset(file_index)
+            file_size = fs.file_size(file_index)
+            piece_len = ti.piece_length()
+            if piece_len <= 0 or file_size <= 0:
+                return
+
+            start_piece = start_offset // piece_len
+            end_piece = (start_offset + file_size - 1) // piece_len
+            total_pieces = end_piece - start_piece + 1
+
+            # Head pieces (first 2-3% or at least 4 pieces)
+            head_count = max(4, min(total_pieces, int(total_pieces * 0.03)))
+            for p in range(start_piece, min(end_piece + 1, start_piece + head_count)):
+                handle.piece_priority(p, 7)
+
+            # Tail pieces (last 2-3% or at least 4 pieces) for mp4 moov atom / metadata
+            tail_count = max(4, min(total_pieces, int(total_pieces * 0.03)))
+            for p in range(max(start_piece, end_piece - tail_count + 1), end_piece + 1):
+                handle.piece_priority(p, 7)
+    except Exception:
+        pass
+
+
+def _get_media_mime(filepath: str) -> str:
+    """Determine MIME type for in-browser streaming playback."""
+    ext = os.path.splitext(filepath)[1].lower()
+    mime_map = {
+        ".mp4": "video/mp4",
+        ".m4v": "video/mp4",
+        ".webm": "video/webm",
+        ".mkv": "video/webm",
+        ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo",
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".flac": "audio/flac",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".vtt": "text/vtt",
+        ".srt": "text/plain",
+    }
+    guessed, _ = mimetypes.guess_type(filepath)
+    return mime_map.get(ext, guessed or "application/octet-stream")
+
+
+@app.post("/api/torrent/download/{torrent_id}/sequential")
+async def toggle_sequential_download(torrent_id: str, req: SequentialTorrentRequest):
+    """Enable or disable sequential piece download mode and stream piece prioritization."""
+    if torrent_id not in active_downloads:
+        raise HTTPException(status_code=404, detail="Torrent not found")
+
+    entry = active_downloads[torrent_id]
+    handle = entry["handle"]
+    if not handle.is_valid():
+        raise HTTPException(status_code=400, detail="Invalid torrent handle")
+
+    try:
+        handle.set_sequential_download(req.sequential)
+        entry["sequential"] = req.sequential
+
+        if req.sequential and req.file_index is not None and handle.status().has_metadata:
+            _prioritize_stream_pieces(handle, req.file_index)
+
+        return {"success": True, "torrent_id": torrent_id, "sequential": req.sequential}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/torrent/stream/{torrent_id}/{file_index}")
+async def stream_torrent_file(torrent_id: str, file_index: int):
+    """Stream an active or completed torrent media file with HTTP Range support."""
+    if torrent_id not in active_downloads:
+        raise HTTPException(status_code=404, detail="Torrent not found")
+
+    entry = active_downloads[torrent_id]
+    handle = entry["handle"]
+    if not handle.is_valid():
+        raise HTTPException(status_code=400, detail="Torrent handle is invalid")
+
+    # Automatically activate sequential mode and prioritize stream pieces
+    try:
+        handle.set_sequential_download(True)
+        entry["sequential"] = True
+        if handle.status().has_metadata:
+            _prioritize_stream_pieces(handle, file_index)
+    except Exception:
+        pass
+
+    save_path = entry.get("save_path", get_torrent_dir())
+    target_path = None
+
+    if handle.status().has_metadata:
+        ti = handle.torrent_file()
+        fs = ti.files()
+        if 0 <= file_index < fs.num_files():
+            rel_path = fs.file_path(file_index)
+            target_path = os.path.join(save_path, rel_path)
+
+    if not target_path or not os.path.exists(target_path):
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "buffering",
+                "message": "Media file is buffering from peers. Please wait...",
+            },
+        )
+
+    file_size = os.path.getsize(target_path)
+    if file_size == 0:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "buffering",
+                "message": "Media file allocated, downloading first pieces...",
+            },
+        )
+
+    mime = _get_media_mime(target_path)
+    return FileResponse(target_path, media_type=mime)
+
+
+@app.get("/api/media/stream")
+async def stream_local_file(path: str):
+    """Stream any local media file with HTTP Range support for in-browser playback."""
+    if not os.path.exists(path) or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Media file not found")
+
+    mime = _get_media_mime(path)
+    return FileResponse(path, media_type=mime)
 
 
 # ─── System, History & Configuration Endpoints ──────────────────────────────

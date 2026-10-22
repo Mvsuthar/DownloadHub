@@ -199,11 +199,44 @@ async function fetchVideoInfo() {
 
         if (videoQualitySelect) {
             videoQualitySelect.innerHTML = '';
+            const videoGroup = document.createElement('optgroup');
+            videoGroup.label = '🎬 Video Formats';
+            const audioGroup = document.createElement('optgroup');
+            audioGroup.label = '🎵 Audio Formats / Encoders';
+
             for (const fmt of data.formats) {
                 const opt = document.createElement('option');
                 opt.value = fmt.format_id;
                 opt.textContent = fmt.label;
-                videoQualitySelect.appendChild(opt);
+                if (fmt.category === 'audio' || fmt.format_id.startsWith('audio-') || fmt.format_id.startsWith('bestaudio')) {
+                    audioGroup.appendChild(opt);
+                } else {
+                    videoGroup.appendChild(opt);
+                }
+            }
+
+            if (videoGroup.children.length > 0) videoQualitySelect.appendChild(videoGroup);
+            if (audioGroup.children.length > 0) videoQualitySelect.appendChild(audioGroup);
+        }
+
+        const subtitleContainer = $('#video-subtitle-container');
+        const subtitleSelect = $('#video-subtitle-select');
+        const embedSubsContainer = $('#video-embed-subs-container');
+
+        if (subtitleSelect && subtitleContainer) {
+            subtitleSelect.innerHTML = '<option value="">None (No Subtitles)</option>';
+            if (data.subtitles && data.subtitles.length > 0) {
+                for (const sub of data.subtitles) {
+                    const opt = document.createElement('option');
+                    opt.value = sub.lang;
+                    opt.textContent = sub.label;
+                    subtitleSelect.appendChild(opt);
+                }
+                subtitleContainer.style.display = 'flex';
+                if (embedSubsContainer) embedSubsContainer.style.display = 'flex';
+            } else {
+                subtitleContainer.style.display = 'none';
+                if (embedSubsContainer) embedSubsContainer.style.display = 'none';
             }
         }
 
@@ -224,6 +257,11 @@ async function startVideoDownload() {
     if (!videoData || videoDownloading) return;
 
     const formatId = videoQualitySelect ? videoQualitySelect.value : 'best';
+    const subSelect = $('#video-subtitle-select');
+    const embedCheck = $('#video-embed-subs-check');
+    const subtitlesLang = subSelect && subSelect.value ? subSelect.value : null;
+    const embedSubtitles = embedCheck ? embedCheck.checked : false;
+
     videoDownloading = true;
     setVideoBtnLoading(videoDownloadBtn, true);
 
@@ -244,7 +282,12 @@ async function startVideoDownload() {
         const resp = await fetch('/api/video/download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: videoData.url, format_id: formatId }),
+            body: JSON.stringify({
+                url: videoData.url,
+                format_id: formatId,
+                subtitles_lang: subtitlesLang,
+                embed_subtitles: embedSubtitles,
+            }),
         });
 
         const { task_id, error } = await resp.json();
@@ -682,6 +725,7 @@ function createTorrentDownloadCard(torrentId, name) {
                 <span class="state-badge downloading_metadata" id="torrent-state-${torrentId}">connecting</span>
             </div>
             <div class="download-card-controls">
+                <button class="btn-icon stream-card-btn" id="torrent-stream-${torrentId}" title="Stream / Watch Media">▶</button>
                 <button class="btn-icon drawer-toggle-btn" id="torrent-drawer-toggle-${torrentId}" title="Inspect Details (Files, Peers, Trackers)">📊</button>
                 <button class="btn-icon pause-btn" id="torrent-pause-${torrentId}" title="Pause">⏸</button>
                 <button class="btn-icon cancel-btn" id="torrent-cancel-${torrentId}" title="Cancel">✕</button>
@@ -733,6 +777,7 @@ function createTorrentDownloadCard(torrentId, name) {
     torrentDownloadsList.prepend(card);
     torrentDownloadCards[torrentId] = card;
 
+    card.querySelector('.stream-card-btn').addEventListener('click', () => streamTorrentCard(torrentId));
     card.querySelector('.pause-btn').addEventListener('click', () => toggleTorrentPause(torrentId));
     card.querySelector('.cancel-btn').addEventListener('click', () => cancelTorrentDownload(torrentId));
     card.querySelector('.drawer-toggle-btn').addEventListener('click', () => toggleTorrentDrawer(torrentId));
@@ -939,8 +984,18 @@ document.addEventListener('DOMContentLoaded', () => {
     loadSpeedLimits();
 
     // Wire completed video action buttons
+    const videoPlayBtn = $('#video-play-btn');
     const videoOpenFileBtn = $('#video-open-file-btn');
     const videoShowFolderBtn = $('#video-show-folder-btn');
+    if (videoPlayBtn) {
+        videoPlayBtn.addEventListener('click', () => {
+            if (lastCompletedVideoPath) {
+                const title = videoData ? videoData.title : 'Downloaded Media';
+                const streamUrl = `/api/media/stream?path=${encodeURIComponent(lastCompletedVideoPath)}`;
+                openPlayerModal(streamUrl, title, false, lastCompletedVideoPath);
+            }
+        });
+    }
     if (videoOpenFileBtn) {
         videoOpenFileBtn.addEventListener('click', () => {
             if (lastCompletedVideoPath) openFile(lastCompletedVideoPath);
@@ -1122,6 +1177,7 @@ function renderHistory(items) {
         const card = document.createElement('div');
         card.className = 'history-card';
         const isVideo = (item.type || item.item_type) === 'video';
+        const isMedia = isVideo || isMediaFile(item.file_path);
         const badgeClass = isVideo ? 'history-badge--video' : 'history-badge--torrent';
         const badgeLabel = isVideo ? '🎬 Video' : '🧲 Torrent';
         const timestamp = item.completed_at ? (item.completed_at < 1e11 ? item.completed_at * 1000 : item.completed_at) : Date.now();
@@ -1142,11 +1198,22 @@ function renderHistory(items) {
                 </div>
             </div>
             <div class="history-actions">
-                <button class="btn btn-primary btn-sm open-btn" type="button" title="Open File">▶ Open</button>
+                ${isMedia ? `<button class="btn btn-primary btn-sm play-btn" type="button" title="Play in Browser">▶ Play</button>` : ''}
+                <button class="btn btn-secondary btn-sm open-btn" type="button" title="Open with Default App">↗ Open</button>
                 <button class="btn btn-secondary btn-sm folder-btn" type="button" title="Show in Folder">📁 Folder</button>
                 <button class="btn btn-secondary btn-sm delete-btn" type="button" title="Delete from history">🗑</button>
             </div>
         `;
+
+        if (isMedia) {
+            const playBtn = card.querySelector('.play-btn');
+            if (playBtn) {
+                playBtn.addEventListener('click', () => {
+                    const streamUrl = `/api/media/stream?path=${encodeURIComponent(item.file_path)}`;
+                    openPlayerModal(streamUrl, item.title, false, item.file_path);
+                });
+            }
+        }
 
         card.querySelector('.open-btn').addEventListener('click', () => openFile(item.file_path));
         card.querySelector('.folder-btn').addEventListener('click', () => showInFolder(item.file_path));
@@ -1384,16 +1451,18 @@ function renderDrawerFiles(torrentId, files) {
         <table class="drawer-table">
             <thead>
                 <tr>
-                    <th style="width: 45%;">File</th>
+                    <th style="width: 38%;">File</th>
                     <th>Size</th>
                     <th>Progress</th>
                     <th>Priority</th>
+                    <th>Action</th>
                 </tr>
             </thead>
             <tbody>
     `;
 
     files.forEach(f => {
+        const media = isMediaFile(f.name);
         html += `
             <tr>
                 <td title="${escapeHtml(f.path)}">${escapeHtml(f.name)}</td>
@@ -1405,6 +1474,9 @@ function renderDrawerFiles(torrentId, files) {
                         <option value="7" ${f.priority === 7 ? 'selected' : ''}>High</option>
                         <option value="0" ${f.priority === 0 ? 'selected' : ''}>Skip</option>
                     </select>
+                </td>
+                <td>
+                    ${media ? `<button type="button" class="btn-stream btn-drawer-stream" data-torrent-id="${torrentId}" data-file-index="${f.index}" data-name="${escapeHtml(f.name)}">▶ Stream</button>` : `<span style="color:var(--text-muted); font-size:0.75rem;">—</span>`}
                 </td>
             </tr>
         `;
@@ -1430,6 +1502,15 @@ function renderDrawerFiles(torrentId, files) {
             } catch (err) {
                 showToast('Failed to change file priority', 'error');
             }
+        });
+    });
+
+    // Attach stream button listener
+    container.querySelectorAll('.btn-drawer-stream').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const fIdx = parseInt(e.currentTarget.getAttribute('data-file-index'), 10);
+            const fName = e.currentTarget.getAttribute('data-name');
+            streamTorrentFile(torrentId, fIdx, fName);
         });
     });
 }
@@ -1511,4 +1592,144 @@ function renderDrawerTrackers(torrentId, trackers) {
 
     html += '</tbody></table>';
     container.innerHTML = html;
+}
+
+// ─── IN-BROWSER HTML5 MEDIA PLAYER & STREAMING CONTROLLER (PHASE 3) ────────
+
+const playerModal = $('#player-modal');
+const playerVideo = $('#media-player-video');
+const playerModalTitle = $('#player-modal-title');
+const playerStreamBadge = $('#player-stream-badge');
+const playerBufferAlert = $('#player-buffer-alert');
+const playerBufferMsg = $('#player-buffer-msg');
+const playerMediaFormat = $('#player-media-format');
+const playerOpenFileBtn = $('#player-open-file-btn');
+const closePlayerBtn = $('#close-player-btn');
+const playerDoneBtn = $('#player-done-btn');
+
+let activePlayerStreamUrl = null;
+let activePlayerFilePath = null;
+
+function isMediaFile(filename) {
+    if (!filename) return false;
+    const mediaExts = ['.mp4', '.m4v', '.webm', '.mkv', '.avi', '.mov', '.mp3', '.m4a', '.flac', '.wav', '.ogg'];
+    const lower = filename.toLowerCase();
+    return mediaExts.some(ext => lower.endsWith(ext));
+}
+
+function openPlayerModal(streamUrl, title = 'Media Stream', isStreaming = false, filePath = null) {
+    if (!playerModal || !playerVideo) return;
+
+    activePlayerStreamUrl = streamUrl;
+    activePlayerFilePath = filePath;
+
+    if (playerModalTitle) playerModalTitle.textContent = title;
+    if (playerStreamBadge) {
+        playerStreamBadge.textContent = isStreaming ? 'STREAMING' : 'PLAYBACK';
+        playerStreamBadge.style.display = 'inline-flex';
+    }
+
+    const extMatch = (title || streamUrl).match(/\.([a-z0-9]+)(?:[?#]|$)/i);
+    const ext = extMatch ? extMatch[1].toUpperCase() : 'MP4';
+    if (playerMediaFormat) playerMediaFormat.textContent = `${ext} • HTML5`;
+
+    if (playerOpenFileBtn) {
+        if (filePath) {
+            playerOpenFileBtn.style.display = 'inline-flex';
+            playerOpenFileBtn.onclick = () => openFile(filePath);
+        } else {
+            playerOpenFileBtn.style.display = 'none';
+        }
+    }
+
+    if (playerBufferAlert) {
+        playerBufferAlert.style.display = isStreaming ? 'flex' : 'none';
+        if (playerBufferMsg) playerBufferMsg.textContent = isStreaming
+            ? 'Buffering stream pieces from swarm...'
+            : '';
+    }
+
+    playerVideo.src = streamUrl;
+    playerModal.removeAttribute('hidden');
+    document.body.style.overflow = 'hidden';
+
+    playerVideo.play().catch(e => {
+        console.log('Autoplay deferred:', e);
+    });
+
+    playerVideo.oncanplay = () => {
+        if (playerBufferAlert) playerBufferAlert.style.display = 'none';
+    };
+
+    playerVideo.onerror = (e) => {
+        if (isStreaming) {
+            if (playerBufferAlert) {
+                playerBufferAlert.style.display = 'flex';
+                if (playerBufferMsg) playerBufferMsg.textContent = 'Buffering next pieces...';
+            }
+        } else {
+            showToast('Unable to stream media format directly in browser. Try opening in external app.', 'warning');
+        }
+    };
+}
+
+function closePlayerModal() {
+    if (!playerModal || !playerVideo) return;
+    playerVideo.pause();
+    playerVideo.removeAttribute('src');
+    playerVideo.load();
+    playerModal.setAttribute('hidden', '');
+    document.body.style.overflow = '';
+    activePlayerStreamUrl = null;
+    activePlayerFilePath = null;
+}
+
+if (closePlayerBtn) closePlayerBtn.addEventListener('click', closePlayerModal);
+if (playerDoneBtn) playerDoneBtn.addEventListener('click', closePlayerModal);
+if (playerModal) {
+    playerModal.addEventListener('click', (e) => {
+        if (e.target === playerModal) closePlayerModal();
+    });
+}
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && playerModal && !playerModal.hasAttribute('hidden')) {
+        closePlayerModal();
+    }
+});
+
+async function streamTorrentFile(torrentId, fileIndex, fileName) {
+    try {
+        await fetch(`/api/torrent/download/${torrentId}/sequential`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sequential: true, file_index: fileIndex }),
+        });
+
+        const streamUrl = `/api/torrent/stream/${torrentId}/${fileIndex}`;
+        openPlayerModal(streamUrl, fileName, true);
+        showToast(`Streaming ${fileName} with sequential priority`, 'info');
+    } catch (e) {
+        showToast('Failed to start torrent stream: ' + e.message, 'error');
+    }
+}
+
+async function streamTorrentCard(torrentId) {
+    try {
+        const res = await fetch(`/api/torrent/download/${torrentId}/details`);
+        if (!res.ok) throw new Error('Failed to retrieve torrent details');
+        const data = await res.json();
+        const files = data.files || [];
+        const mediaFiles = files.filter(f => isMediaFile(f.name));
+
+        if (mediaFiles.length === 0) {
+            showToast('No playable media files found in this torrent yet. Check Details drawer.', 'warning');
+            return;
+        }
+
+        mediaFiles.sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
+        const target = mediaFiles[0];
+        streamTorrentFile(torrentId, target.index, target.name);
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
 }

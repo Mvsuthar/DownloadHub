@@ -12,7 +12,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Optional
+from typing import Optional, Union
 
 import libtorrent as lt
 import uvicorn
@@ -88,6 +88,11 @@ _tasks: dict[str, dict] = {}
 _tasks_lock = threading.Lock()
 _cancelled: set[str] = set()   # task IDs that have been cancelled
 
+# Video download queue & concurrency management
+MAX_CONCURRENT_VIDEO_DOWNLOADS = 3
+_video_queue: list[str] = []         # ordered list of task IDs
+_active_video_tasks: set[str] = set() # task IDs currently downloading
+
 # ─── FastAPI app ─────────────────────────────────────────────────────────────
 
 app = FastAPI(title="DownloadHub", version="1.0.0")
@@ -113,13 +118,15 @@ def _cleanup_old_tasks():
     """Remove oldest completed tasks if we exceed the limit."""
     with _tasks_lock:
         completed = [
-            tid for tid, t in _tasks.items()
-            if t["status"] in ("complete", "error", "cancelled")
+            tid for tid in _video_queue
+            if tid in _tasks and _tasks[tid]["status"] in ("complete", "error", "cancelled")
         ]
         if len(completed) > _MAX_COMPLETED_TASKS:
-            for tid in completed[:len(completed) - _MAX_COMPLETED_TASKS]:
+            to_remove = set(completed[:len(completed) - _MAX_COMPLETED_TASKS])
+            for tid in to_remove:
                 _tasks.pop(tid, None)
                 _cancelled.discard(tid)
+            _video_queue[:] = [tid for tid in _video_queue if tid not in to_remove]
 
 # ─── Request Models ──────────────────────────────────────────────────────────
 
@@ -130,6 +137,19 @@ class VideoDownloadRequest(BaseModel):
     url: str
     format_id: str = "best"
     filename: Optional[str] = None
+    subtitles_lang: Optional[str] = None
+    embed_subtitles: bool = False
+
+class VideoBatchItem(BaseModel):
+    url: str
+    title: Optional[str] = None
+    thumbnail: Optional[str] = None
+    duration: Optional[Union[int, float]] = None
+    duration_formatted: Optional[str] = None
+
+class VideoBatchRequest(BaseModel):
+    items: list[VideoBatchItem]
+    format_id: str = "best"
     subtitles_lang: Optional[str] = None
     embed_subtitles: bool = False
 
@@ -228,34 +248,101 @@ async def index():
 # Video Routes (/api/video/...)
 # =============================================================================
 
+def _dispatch_video_queue():
+    """Start next queued tasks up to MAX_CONCURRENT_VIDEO_DOWNLOADS."""
+    with _tasks_lock:
+        while len(_active_video_tasks) < MAX_CONCURRENT_VIDEO_DOWNLOADS:
+            next_tid = None
+            for tid in _video_queue:
+                t = _tasks.get(tid)
+                if t and t.get("status") == "queued" and tid not in _active_video_tasks:
+                    next_tid = tid
+                    break
+            if not next_tid:
+                break
+
+            _active_video_tasks.add(next_tid)
+            _tasks[next_tid]["status"] = "starting"
+
+            thread = threading.Thread(
+                target=_download_worker_wrapper,
+                args=(next_tid,),
+                daemon=True,
+            )
+            thread.start()
+
+
+def _download_worker_wrapper(task_id: str):
+    """Wraps _download_worker to ensure queue concurrency release and dispatching."""
+    try:
+        with _tasks_lock:
+            task = _tasks.get(task_id)
+        if not task or task.get("status") == "cancelled":
+            return
+
+        url = task["url"]
+        format_id = task.get("format_id", "best")
+        filename = task.get("custom_filename")
+        subtitles_lang = task.get("subtitles_lang")
+        embed_subtitles = task.get("embed_subtitles", False)
+
+        _download_worker(
+            task_id=task_id,
+            url=url,
+            format_id=format_id,
+            filename=filename,
+            subtitles_lang=subtitles_lang,
+            embed_subtitles=embed_subtitles,
+        )
+    finally:
+        with _tasks_lock:
+            _active_video_tasks.discard(task_id)
+        _dispatch_video_queue()
+
+
 @app.post("/api/video/fetch")
 async def video_fetch(req: VideoFetchRequest):
-    """Fetch video metadata without downloading."""
+    """Fetch video or playlist metadata without downloading."""
     url = req.url.strip()
     if not url:
         return JSONResponse({"error": "URL is required"}, status_code=400)
 
     try:
-        info = await asyncio.to_thread(downloader.fetch_info, url)
+        is_playlist, info = await asyncio.to_thread(downloader.fetch_any, url)
     except Exception as exc:
         return JSONResponse({"error": str(exc).split("\n")[0][:200]}, status_code=400)
 
-    return {
-        "title": info.title,
-        "thumbnail": info.thumbnail,
-        "duration": info.duration,
-        "duration_formatted": format_duration(info.duration),
-        "uploader": info.uploader,
-        "url": info.url,
-        "platform": get_platform_name(url),
-        "formats": info.formats,
-        "subtitles": info.subtitles,
-    }
+    if is_playlist:
+        return {
+            "is_playlist": True,
+            "title": info.title,
+            "thumbnail": info.thumbnail,
+            "uploader": info.uploader,
+            "total_count": info.total_count,
+            "total_duration_seconds": info.total_duration_seconds,
+            "total_duration_formatted": info.total_duration_formatted,
+            "url": info.webpage_url or url,
+            "platform": get_platform_name(url),
+            "entries": info.entries,
+        }
+    else:
+        return {
+            "is_playlist": False,
+            "title": info.title,
+            "thumbnail": info.thumbnail,
+            "duration": info.duration,
+            "duration_formatted": format_duration(info.duration),
+            "uploader": info.uploader,
+            "url": info.url,
+            "platform": get_platform_name(url),
+            "formats": info.formats,
+            "subtitles": info.subtitles,
+        }
 
 
 @app.post("/api/video/download")
 async def video_download(req: VideoDownloadRequest):
-    """Start a download in the background and return a task_id."""
+    """Start or queue a single video download in the background."""
     url = req.url.strip()
     format_id = req.format_id
     if not url:
@@ -265,41 +352,155 @@ async def video_download(req: VideoDownloadRequest):
 
     with _tasks_lock:
         _tasks[task_id] = {
-            "status": "starting",
+            "task_id": task_id,
+            "title": req.filename or "Video Download",
+            "url": url,
+            "format_id": format_id,
+            "custom_filename": req.filename,
+            "subtitles_lang": req.subtitles_lang,
+            "embed_subtitles": req.embed_subtitles,
+            "status": "queued",
             "percent": 0,
             "speed": None,
             "eta": None,
             "downloaded": 0,
             "total": 0,
             "filename": None,
+            "filepath": None,
             "error": None,
+            "created_at": time.time(),
         }
+        _video_queue.append(task_id)
 
-    thread = threading.Thread(
-        target=_download_worker,
-        args=(
-            task_id,
-            url,
-            format_id,
-            req.filename,
-            req.subtitles_lang,
-            req.embed_subtitles,
-        ),
-        daemon=True,
-    )
-    thread.start()
+    _dispatch_video_queue()
 
     return {"task_id": task_id}
 
 
+@app.post("/api/video/batch")
+async def video_batch(req: VideoBatchRequest):
+    """Queue multiple video downloads."""
+    if not req.items:
+        return JSONResponse({"error": "No items provided"}, status_code=400)
+
+    created_task_ids = []
+    with _tasks_lock:
+        for item in req.items:
+            url = item.url.strip()
+            if not url:
+                continue
+            task_id = str(uuid.uuid4())
+            _tasks[task_id] = {
+                "task_id": task_id,
+                "title": item.title or "Video",
+                "thumbnail": item.thumbnail,
+                "duration": item.duration,
+                "duration_formatted": item.duration_formatted or (format_duration(item.duration) if item.duration else "--:--"),
+                "url": url,
+                "format_id": req.format_id,
+                "custom_filename": None,
+                "subtitles_lang": req.subtitles_lang,
+                "embed_subtitles": req.embed_subtitles,
+                "status": "queued",
+                "percent": 0,
+                "speed": None,
+                "eta": None,
+                "downloaded": 0,
+                "total": 0,
+                "filename": None,
+                "filepath": None,
+                "error": None,
+                "created_at": time.time(),
+            }
+            _video_queue.append(task_id)
+            created_task_ids.append(task_id)
+
+    _dispatch_video_queue()
+
+    return {"task_ids": created_task_ids, "queued_count": len(created_task_ids)}
+
+
+@app.get("/api/video/queue")
+async def get_video_queue():
+    """Get the current video download queue status."""
+    with _tasks_lock:
+        queue_items = []
+        for tid in _video_queue:
+            t = _tasks.get(tid)
+            if not t:
+                continue
+            queue_items.append({
+                "task_id": tid,
+                "title": t.get("title") or t.get("filename") or "Video",
+                "thumbnail": t.get("thumbnail"),
+                "duration_formatted": t.get("duration_formatted"),
+                "url": t.get("url"),
+                "format_id": t.get("format_id", "best"),
+                "status": t.get("status", "queued"),
+                "percent": round(t.get("percent", 0), 1),
+                "speed": format_speed(t.get("speed")) if t.get("speed") else None,
+                "eta": format_eta(t.get("eta")) if t.get("eta") else None,
+                "downloaded": format_bytes(t.get("downloaded", 0)),
+                "total": format_bytes(t.get("total", 0)) if t.get("total") else None,
+                "filename": t.get("filename"),
+                "filepath": t.get("filepath"),
+                "error": t.get("error"),
+            })
+
+        active_count = len(_active_video_tasks)
+        queued_count = sum(1 for item in queue_items if item["status"] == "queued")
+        completed_count = sum(1 for item in queue_items if item["status"] == "complete")
+
+        return {
+            "max_concurrent": MAX_CONCURRENT_VIDEO_DOWNLOADS,
+            "active_count": active_count,
+            "queued_count": queued_count,
+            "completed_count": completed_count,
+            "total_count": len(queue_items),
+            "tasks": queue_items,
+        }
+
+
+@app.post("/api/video/clear-completed")
+async def clear_completed_video_tasks():
+    """Clear all completed, error, or cancelled video tasks from the queue."""
+    with _tasks_lock:
+        to_remove = set()
+        for tid in _video_queue:
+            t = _tasks.get(tid)
+            if t and t.get("status") in ("complete", "error", "cancelled"):
+                to_remove.add(tid)
+        for tid in to_remove:
+            _tasks.pop(tid, None)
+            _cancelled.discard(tid)
+        _video_queue[:] = [tid for tid in _video_queue if tid not in to_remove]
+    return {"cleared": len(to_remove)}
+
+
+@app.post("/api/video/cancel-all")
+async def cancel_all_video_tasks():
+    """Cancel all queued and active video tasks."""
+    cancelled_count = 0
+    with _tasks_lock:
+        for tid in _video_queue:
+            t = _tasks.get(tid)
+            if t and t.get("status") in ("queued", "starting", "downloading", "merging"):
+                _cancelled.add(tid)
+                t["status"] = "cancelled"
+                cancelled_count += 1
+    _dispatch_video_queue()
+    return {"cancelled": cancelled_count}
+
+
 @app.post("/api/video/cancel/{task_id}")
 async def video_cancel(task_id: str):
-    """Cancel a running download."""
+    """Cancel a running or queued download."""
     with _tasks_lock:
         _cancelled.add(task_id)
         task = _tasks.get(task_id)
-        if task and task["status"] not in ("complete", "error", "cancelled"):
+        if task:
             task["status"] = "cancelled"
+    _dispatch_video_queue()
     return {"cancelled": True}
 
 
@@ -420,6 +621,8 @@ def _download_worker(
                 _tasks[task_id]["percent"] = 100
                 _tasks[task_id]["filename"] = os.path.basename(path) if path else None
                 _tasks[task_id]["filepath"] = path
+                if path:
+                    _tasks[task_id]["title"] = os.path.splitext(os.path.basename(path))[0]
 
         if path and os.path.exists(path):
             file_size = os.path.getsize(path)

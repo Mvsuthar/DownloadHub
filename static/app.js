@@ -120,11 +120,47 @@ const videoStatusText = $('#video-status-text');
 const videoStatusBar = $('#video-status-bar');
 const videoCancelBtn = $('#video-cancel-btn');
 
+// Playlist Selectors
+const playlistCard = $('#playlist-card');
+const playlistThumb = $('#playlist-thumb');
+const playlistTitle = $('#playlist-title');
+const playlistUploader = $('#playlist-uploader');
+const playlistVideoCount = $('#playlist-video-count');
+const playlistTotalDuration = $('#playlist-total-duration');
+const playlistPlatformBadge = $('#playlist-platform-badge');
+const playlistSelectAllCheck = $('#playlist-select-all-check');
+const playlistSelectionCounter = $('#playlist-selection-counter');
+const playlistSelectionDuration = $('#playlist-selection-duration');
+const playlistQualitySelect = $('#playlist-quality-select');
+const playlistDownloadBtn = $('#playlist-download-btn');
+const playlistEntriesList = $('#playlist-entries-list');
+
+// Queue Selectors
+const videoQueueSection = $('#video-queue-section');
+const queueStatusChip = $('#queue-status-chip');
+const videoQueueList = $('#video-queue-list');
+const videoQueueClearBtn = $('#video-queue-clear-btn');
+const videoQueueCancelAllBtn = $('#video-queue-cancel-all-btn');
+
 let videoData = null;
+let currentPlaylistData = null;
+let playlistSelectedIndices = new Set();
+let videoQueuePollTimer = null;
+
 let videoDownloading = false;
 let videoCurrentTaskId = null;
 let videoCurrentEvtSource = null;
 let lastCompletedVideoPath = null;
+
+function formatSeconds(seconds) {
+    if (!seconds || seconds <= 0) return '00:00';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const pad = (n) => String(n).padStart(2, '0');
+    if (h > 0) return `${h}h ${pad(m)}m ${pad(s)}s`;
+    return `${pad(m)}:${pad(s)}`;
+}
 
 function setVideoStatus(text, level = '') {
     if (videoStatusText) videoStatusText.textContent = text;
@@ -157,13 +193,13 @@ function setVideoBtnLoading(btn, loading) {
 async function fetchVideoInfo() {
     const url = videoUrlInput.value.trim();
     if (!url) {
-        setVideoStatus('⚠ Please enter a video URL.', 'warning');
-        showToast('Please enter a video URL.', 'warning');
+        setVideoStatus('⚠ Please enter a video or playlist URL.', 'warning');
+        showToast('Please enter a video or playlist URL.', 'warning');
         return;
     }
 
     setVideoBtnLoading(videoFetchBtn, true);
-    setVideoStatus('Fetching video information…');
+    setVideoStatus('Fetching video or playlist information…');
     if (!videoDownloading) {
         hideVideoCard(videoProgressCard);
     }
@@ -179,71 +215,105 @@ async function fetchVideoInfo() {
 
         if (!resp.ok) throw new Error(data.error || 'Failed to fetch video details');
 
-        videoData = data;
+        if (data.is_playlist) {
+            // Handle Playlist Extraction
+            hideVideoCard(videoInfoCard);
+            hideVideoCard(videoOptionsCard);
 
-        if (videoInfoThumb) {
-            if (data.thumbnail) {
-                videoInfoThumb.src = data.thumbnail;
-                videoInfoThumb.style.display = 'block';
-            } else {
-                videoInfoThumb.style.display = 'none';
-            }
-        }
-        if (videoInfoTitle) videoInfoTitle.textContent = data.title;
-        
-        const parts = [];
-        if (data.uploader && data.uploader !== 'Unknown') parts.push(data.uploader);
-        if (data.duration_formatted) parts.push(data.duration_formatted);
-        if (videoInfoDetails) videoInfoDetails.textContent = parts.join(' • ');
-        if (videoInfoPlatform) videoInfoPlatform.textContent = data.platform;
+            currentPlaylistData = data;
+            videoData = null;
 
-        if (videoQualitySelect) {
-            videoQualitySelect.innerHTML = '';
-            const videoGroup = document.createElement('optgroup');
-            videoGroup.label = '🎬 Video Formats';
-            const audioGroup = document.createElement('optgroup');
-            audioGroup.label = '🎵 Audio Formats / Encoders';
-
-            for (const fmt of data.formats) {
-                const opt = document.createElement('option');
-                opt.value = fmt.format_id;
-                opt.textContent = fmt.label;
-                if (fmt.category === 'audio' || fmt.format_id.startsWith('audio-') || fmt.format_id.startsWith('bestaudio')) {
-                    audioGroup.appendChild(opt);
+            if (playlistThumb) {
+                if (data.thumbnail) {
+                    playlistThumb.src = data.thumbnail;
+                    playlistThumb.style.display = 'block';
                 } else {
-                    videoGroup.appendChild(opt);
+                    playlistThumb.style.display = 'none';
                 }
             }
+            if (playlistTitle) playlistTitle.textContent = data.title || 'Playlist';
+            if (playlistUploader) playlistUploader.textContent = data.uploader || 'Unknown';
+            if (playlistVideoCount) playlistVideoCount.textContent = `${data.total_count} Videos`;
+            if (playlistTotalDuration) playlistTotalDuration.textContent = data.total_duration_formatted || '--:--';
+            if (playlistPlatformBadge) playlistPlatformBadge.textContent = data.platform || 'YouTube';
 
-            if (videoGroup.children.length > 0) videoQualitySelect.appendChild(videoGroup);
-            if (audioGroup.children.length > 0) videoQualitySelect.appendChild(audioGroup);
-        }
+            playlistSelectedIndices = new Set(data.entries.map((_, i) => i));
+            renderPlaylistEntries(data.entries);
+            updatePlaylistSelectionStats();
 
-        const subtitleContainer = $('#video-subtitle-container');
-        const subtitleSelect = $('#video-subtitle-select');
-        const embedSubsContainer = $('#video-embed-subs-container');
+            showVideoCard(playlistCard);
+            setVideoStatus(`✔ Playlist loaded — ${data.entries.length} videos available.`, 'success');
+            showToast(`Playlist loaded: ${data.entries.length} videos`, 'success');
+        } else {
+            // Handle Single Video
+            hideVideoCard(playlistCard);
+            currentPlaylistData = null;
+            videoData = data;
 
-        if (subtitleSelect && subtitleContainer) {
-            subtitleSelect.innerHTML = '<option value="">None (No Subtitles)</option>';
-            if (data.subtitles && data.subtitles.length > 0) {
-                for (const sub of data.subtitles) {
+            if (videoInfoThumb) {
+                if (data.thumbnail) {
+                    videoInfoThumb.src = data.thumbnail;
+                    videoInfoThumb.style.display = 'block';
+                } else {
+                    videoInfoThumb.style.display = 'none';
+                }
+            }
+            if (videoInfoTitle) videoInfoTitle.textContent = data.title;
+            
+            const parts = [];
+            if (data.uploader && data.uploader !== 'Unknown') parts.push(data.uploader);
+            if (data.duration_formatted) parts.push(data.duration_formatted);
+            if (videoInfoDetails) videoInfoDetails.textContent = parts.join(' • ');
+            if (videoInfoPlatform) videoInfoPlatform.textContent = data.platform;
+
+            if (videoQualitySelect) {
+                videoQualitySelect.innerHTML = '';
+                const videoGroup = document.createElement('optgroup');
+                videoGroup.label = '🎬 Video Formats';
+                const audioGroup = document.createElement('optgroup');
+                audioGroup.label = '🎵 Audio Formats / Encoders';
+
+                for (const fmt of data.formats) {
                     const opt = document.createElement('option');
-                    opt.value = sub.lang;
-                    opt.textContent = sub.label;
-                    subtitleSelect.appendChild(opt);
+                    opt.value = fmt.format_id;
+                    opt.textContent = fmt.label;
+                    if (fmt.category === 'audio' || fmt.format_id.startsWith('audio-') || fmt.format_id.startsWith('bestaudio')) {
+                        audioGroup.appendChild(opt);
+                    } else {
+                        videoGroup.appendChild(opt);
+                    }
                 }
-                subtitleContainer.style.display = 'flex';
-                if (embedSubsContainer) embedSubsContainer.style.display = 'flex';
-            } else {
-                subtitleContainer.style.display = 'none';
-                if (embedSubsContainer) embedSubsContainer.style.display = 'none';
-            }
-        }
 
-        showVideoCard(videoInfoCard);
-        showVideoCard(videoOptionsCard);
-        setVideoStatus('✔ Video info loaded — select quality to download.', 'success');
-        showToast('Video information loaded!', 'success');
+                if (videoGroup.children.length > 0) videoQualitySelect.appendChild(videoGroup);
+                if (audioGroup.children.length > 0) videoQualitySelect.appendChild(audioGroup);
+            }
+
+            const subtitleContainer = $('#video-subtitle-container');
+            const subtitleSelect = $('#video-subtitle-select');
+            const embedSubsContainer = $('#video-embed-subs-container');
+
+            if (subtitleSelect && subtitleContainer) {
+                subtitleSelect.innerHTML = '<option value="">None (No Subtitles)</option>';
+                if (data.subtitles && data.subtitles.length > 0) {
+                    for (const sub of data.subtitles) {
+                        const opt = document.createElement('option');
+                        opt.value = sub.lang;
+                        opt.textContent = sub.label;
+                        subtitleSelect.appendChild(opt);
+                    }
+                    subtitleContainer.style.display = 'flex';
+                    if (embedSubsContainer) embedSubsContainer.style.display = 'flex';
+                } else {
+                    subtitleContainer.style.display = 'none';
+                    if (embedSubsContainer) embedSubsContainer.style.display = 'none';
+                }
+            }
+
+            showVideoCard(videoInfoCard);
+            showVideoCard(videoOptionsCard);
+            setVideoStatus('✔ Video info loaded — select quality to download.', 'success');
+            showToast('Video information loaded!', 'success');
+        }
 
     } catch (err) {
         setVideoStatus(`✖ ${err.message}`, 'error');
@@ -251,6 +321,242 @@ async function fetchVideoInfo() {
     } finally {
         setVideoBtnLoading(videoFetchBtn, false);
     }
+}
+
+function renderPlaylistEntries(entries) {
+    if (!playlistEntriesList) return;
+    playlistEntriesList.innerHTML = '';
+
+    entries.forEach((entry, idx) => {
+        const row = document.createElement('div');
+        row.className = 'playlist-entry-item';
+        row.dataset.index = idx;
+
+        const isChecked = playlistSelectedIndices.has(idx);
+
+        row.innerHTML = `
+            <input type="checkbox" class="playlist-entry-check" data-index="${idx}" ${isChecked ? 'checked' : ''} aria-label="Select ${escapeHtml(entry.title)}">
+            <span class="playlist-entry-idx">#${idx + 1}</span>
+            ${entry.thumbnail ? `<img class="playlist-entry-thumb" src="${entry.thumbnail}" alt="" loading="lazy" onerror="this.style.display='none'">` : `<div class="playlist-entry-thumb-placeholder">🎬</div>`}
+            <div class="playlist-entry-info">
+                <span class="playlist-entry-title" title="${escapeHtml(entry.title)}">${escapeHtml(entry.title)}</span>
+                <span class="playlist-entry-channel">${escapeHtml(entry.uploader || '')}</span>
+            </div>
+            <span class="playlist-entry-duration">${entry.duration_formatted || '--:--'}</span>
+        `;
+
+        const checkInput = row.querySelector('.playlist-entry-check');
+        checkInput.addEventListener('change', (e) => {
+            const index = Number(e.target.dataset.index);
+            if (e.target.checked) {
+                playlistSelectedIndices.add(index);
+            } else {
+                playlistSelectedIndices.delete(index);
+            }
+            updatePlaylistSelectionStats();
+        });
+
+        playlistEntriesList.appendChild(row);
+    });
+}
+
+function updatePlaylistSelectionStats() {
+    if (!currentPlaylistData) return;
+    const total = currentPlaylistData.entries.length;
+    const count = playlistSelectedIndices.size;
+
+    if (playlistSelectionCounter) {
+        playlistSelectionCounter.textContent = `${count} of ${total} selected`;
+    }
+
+    let totalDuration = 0;
+    for (const idx of playlistSelectedIndices) {
+        const item = currentPlaylistData.entries[idx];
+        if (item && item.duration) {
+            totalDuration += Number(item.duration);
+        }
+    }
+
+    if (playlistSelectionDuration) {
+        playlistSelectionDuration.textContent = totalDuration > 0 ? `(${formatSeconds(totalDuration)})` : '';
+    }
+
+    if (playlistDownloadBtn) {
+        const text = playlistDownloadBtn.querySelector('.btn__text');
+        if (text) text.textContent = `⬇ Download Selected (${count})`;
+        playlistDownloadBtn.disabled = count === 0;
+    }
+
+    if (playlistSelectAllCheck) {
+        playlistSelectAllCheck.checked = (count === total && total > 0);
+        playlistSelectAllCheck.indeterminate = (count > 0 && count < total);
+    }
+}
+
+async function startPlaylistBatchDownload() {
+    if (!currentPlaylistData || playlistSelectedIndices.size === 0) return;
+
+    const selectedItems = [];
+    for (const idx of playlistSelectedIndices) {
+        const item = currentPlaylistData.entries[idx];
+        if (item) {
+            selectedItems.push({
+                url: item.url,
+                title: item.title,
+                thumbnail: item.thumbnail,
+                duration: item.duration,
+                duration_formatted: item.duration_formatted,
+            });
+        }
+    }
+
+    const formatId = playlistQualitySelect ? playlistQualitySelect.value : 'best';
+
+    setVideoBtnLoading(playlistDownloadBtn, true);
+    setVideoStatus(`Queuing ${selectedItems.length} videos for batch download…`);
+
+    try {
+        const resp = await fetch('/api/video/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                items: selectedItems,
+                format_id: formatId,
+            }),
+        });
+
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'Failed to queue playlist batch');
+
+        showToast(`Queued ${data.queued_count} videos in download manager!`, 'success');
+        setVideoStatus(`✔ ${data.queued_count} videos added to queue.`, 'success');
+        fetchVideoQueue();
+    } catch (err) {
+        setVideoStatus(`✖ ${err.message}`, 'error');
+        showToast(err.message, 'error');
+    } finally {
+        setVideoBtnLoading(playlistDownloadBtn, false);
+    }
+}
+
+async function fetchVideoQueue() {
+    try {
+        const res = await fetch('/api/video/queue');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (!data.tasks || data.tasks.length === 0) {
+            if (videoQueueSection) hideVideoCard(videoQueueSection);
+            return;
+        }
+
+        if (videoQueueSection) showVideoCard(videoQueueSection);
+
+        if (queueStatusChip) {
+            queueStatusChip.textContent = `${data.active_count} Active • ${data.queued_count} Queued • ${data.completed_count} Done`;
+        }
+
+        if (videoQueueList) {
+            renderVideoQueueItems(data.tasks);
+        }
+
+        clearTimeout(videoQueuePollTimer);
+        if (data.active_count > 0 || data.queued_count > 0) {
+            videoQueuePollTimer = setTimeout(fetchVideoQueue, 1500);
+        } else {
+            videoQueuePollTimer = setTimeout(fetchVideoQueue, 5000);
+        }
+    } catch (e) {
+        // Silent catch for background polling
+    }
+}
+
+function renderVideoQueueItems(tasks) {
+    if (!videoQueueList) return;
+    videoQueueList.innerHTML = '';
+
+    tasks.forEach((t) => {
+        const card = document.createElement('div');
+        card.className = 'queue-item';
+
+        const statusClass = `status-badge ${t.status}`;
+        const canCancel = ['queued', 'starting', 'downloading', 'merging'].includes(t.status);
+        const isComplete = t.status === 'complete';
+
+        let statsText = '';
+        if (t.status === 'downloading' || t.status === 'merging') {
+            const parts = [];
+            if (t.speed) parts.push(`Speed: ${t.speed}`);
+            if (t.eta) parts.push(`ETA: ${t.eta}`);
+            if (t.total) parts.push(`${t.downloaded} / ${t.total}`);
+            statsText = parts.join(' • ');
+        } else if (t.status === 'queued') {
+            statsText = 'Waiting in queue (3 active max)…';
+        } else if (t.status === 'complete') {
+            statsText = `Completed ${t.filename || ''} (${t.downloaded || ''})`;
+        } else if (t.status === 'error') {
+            statsText = `Error: ${t.error || 'Download failed'}`;
+        } else if (t.status === 'cancelled') {
+            statsText = 'Cancelled by user';
+        }
+
+        card.innerHTML = `
+            <div class="queue-item-row">
+                ${t.thumbnail ? `<img class="queue-item-thumb" src="${t.thumbnail}" alt="" loading="lazy" onerror="this.style.display='none'">` : `<div class="queue-item-thumb" style="display:flex;align-items:center;justify-content:center;background:#141b2d;font-size:0.75rem;">🎬</div>`}
+                <div class="queue-item-main">
+                    <span class="queue-item-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}</span>
+                    <div class="queue-item-meta">
+                        <span class="format-badge">${escapeHtml(t.format_id)}</span>
+                        ${t.duration_formatted ? `<span>${t.duration_formatted}</span>` : ''}
+                    </div>
+                </div>
+                <div class="queue-item-badges">
+                    <span class="${statusClass}">${t.status}</span>
+                    <div class="queue-item-actions">
+                        ${canCancel ? `<button class="queue-btn-icon queue-btn-cancel" title="Cancel this download" data-task-id="${t.task_id}">✕</button>` : ''}
+                        ${isComplete && t.filepath ? `
+                            <button class="btn btn-secondary btn-xs queue-play-btn" data-filepath="${escapeHtml(t.filepath)}" title="Play in browser">▶ Play</button>
+                            <button class="btn btn-secondary btn-xs queue-folder-btn" data-filepath="${escapeHtml(t.filepath)}" title="Show in folder">📁</button>
+                        ` : ''}
+                    </div>
+                </div>
+            </div>
+            ${(t.status === 'downloading' || t.status === 'merging' || t.percent > 0) ? `
+                <div class="queue-item-progress-track">
+                    <div class="queue-item-progress-fill" style="width: ${t.percent}%"></div>
+                </div>
+            ` : ''}
+            <div class="queue-item-stats">
+                <span>${escapeHtml(statsText)}</span>
+                ${(t.status === 'downloading' || t.status === 'merging') ? `<span>${t.percent}%</span>` : ''}
+            </div>
+        `;
+
+        const cancelBtn = card.querySelector('.queue-btn-cancel');
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', async () => {
+                await fetch(`/api/video/cancel/${t.task_id}`, { method: 'POST' });
+                showToast('Download cancelled', 'warning');
+                fetchVideoQueue();
+            });
+        }
+
+        const playBtn = card.querySelector('.queue-play-btn');
+        if (playBtn) {
+            playBtn.addEventListener('click', () => {
+                openFile(t.filepath);
+            });
+        }
+
+        const folderBtn = card.querySelector('.queue-folder-btn');
+        if (folderBtn) {
+            folderBtn.addEventListener('click', () => {
+                showInFolder(t.filepath);
+            });
+        }
+
+        videoQueueList.appendChild(card);
+    });
 }
 
 async function startVideoDownload() {
@@ -294,6 +600,7 @@ async function startVideoDownload() {
         if (error) throw new Error(error);
 
         videoCurrentTaskId = task_id;
+        fetchVideoQueue();
         const evtSource = new EventSource(`/api/video/progress/${task_id}`);
         videoCurrentEvtSource = evtSource;
 
@@ -389,6 +696,46 @@ if (videoUrlInput) {
 }
 if (videoDownloadBtn) videoDownloadBtn.addEventListener('click', startVideoDownload);
 if (videoCancelBtn) videoCancelBtn.addEventListener('click', cancelVideoDownload);
+
+// Playlist & Queue Event Listeners
+if (playlistSelectAllCheck) {
+    playlistSelectAllCheck.addEventListener('change', (e) => {
+        if (!currentPlaylistData) return;
+        if (e.target.checked) {
+            playlistSelectedIndices = new Set(currentPlaylistData.entries.map((_, i) => i));
+        } else {
+            playlistSelectedIndices.clear();
+        }
+        const checks = $$('.playlist-entry-check');
+        checks.forEach(c => c.checked = e.target.checked);
+        updatePlaylistSelectionStats();
+    });
+}
+
+if (playlistDownloadBtn) {
+    playlistDownloadBtn.addEventListener('click', startPlaylistBatchDownload);
+}
+
+if (videoQueueClearBtn) {
+    videoQueueClearBtn.addEventListener('click', async () => {
+        const res = await fetch('/api/video/clear-completed', { method: 'POST' });
+        if (res.ok) {
+            showToast('Cleared finished downloads', 'info');
+            fetchVideoQueue();
+        }
+    });
+}
+
+if (videoQueueCancelAllBtn) {
+    videoQueueCancelAllBtn.addEventListener('click', async () => {
+        if (!confirm('Are you sure you want to cancel all queued and active downloads?')) return;
+        const res = await fetch('/api/video/cancel-all', { method: 'POST' });
+        if (res.ok) {
+            showToast('All downloads cancelled', 'warning');
+            fetchVideoQueue();
+        }
+    });
+}
 
 // ─── TORRENT DOWNLOADER MODULE ──────────────────────────────────────────────
 
@@ -1733,3 +2080,6 @@ async function streamTorrentCard(torrentId) {
         showToast(e.message, 'error');
     }
 }
+
+// Initial fetch for video download queue
+fetchVideoQueue();

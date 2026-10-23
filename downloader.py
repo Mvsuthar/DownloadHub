@@ -7,7 +7,8 @@ import shutil
 import subprocess
 import yt_dlp
 import os
-from utils import sanitize_filename, get_default_download_dir
+from typing import Union
+from utils import sanitize_filename, get_default_download_dir, format_duration
 
 
 def _has_ffmpeg() -> bool:
@@ -169,11 +170,94 @@ class VideoInfo:
         return parsed
 
 
+class PlaylistInfo:
+    """Holds metadata and video entries for a fetched playlist or channel."""
+
+    def __init__(self, info_dict: dict):
+        self.id = info_dict.get("id", "")
+        self.title = info_dict.get("title", "Unknown Playlist")
+        self.uploader = (
+            info_dict.get("uploader")
+            or info_dict.get("channel")
+            or info_dict.get("uploader_id")
+            or "Unknown"
+        )
+        self.extractor = info_dict.get("extractor_key", "Generic")
+        self.webpage_url = info_dict.get("webpage_url", info_dict.get("url", ""))
+        self.description = info_dict.get("description", "")
+        self.thumbnail = info_dict.get("thumbnail")
+
+        raw_entries = info_dict.get("entries") or []
+        self.entries = []
+        total_seconds = 0
+
+        for idx, entry in enumerate(raw_entries):
+            if not entry:
+                continue
+
+            entry_url = entry.get("url") or entry.get("webpage_url") or ""
+            video_id = entry.get("id", str(idx + 1))
+            if not entry_url or not entry_url.startswith("http"):
+                if entry.get("ie_key") == "Youtube" or len(str(video_id)) == 11:
+                    entry_url = f"https://www.youtube.com/watch?v={video_id}"
+                else:
+                    entry_url = entry.get("url") or ""
+
+            thumb = entry.get("thumbnail")
+            if not thumb and entry.get("thumbnails"):
+                thumbs = entry.get("thumbnails")
+                if isinstance(thumbs, list) and len(thumbs) > 0:
+                    thumb = thumbs[-1].get("url")
+
+            dur = entry.get("duration")
+            if dur and isinstance(dur, (int, float)):
+                total_seconds += int(dur)
+
+            self.entries.append({
+                "index": idx,
+                "id": str(video_id),
+                "title": entry.get("title") or f"Video #{idx + 1}",
+                "duration": dur,
+                "duration_formatted": format_duration(dur) if dur else "--:--",
+                "uploader": entry.get("uploader") or entry.get("channel") or self.uploader,
+                "url": entry_url,
+                "thumbnail": thumb,
+            })
+
+        self.total_count = len(self.entries)
+        self.total_duration_seconds = total_seconds
+        self.total_duration_formatted = format_duration(total_seconds) if total_seconds > 0 else "N/A"
+        if not self.thumbnail and self.entries and self.entries[0].get("thumbnail"):
+            self.thumbnail = self.entries[0]["thumbnail"]
+        self.formats = VideoInfo._parse_formats(info_dict)
+
+
 class Downloader:
     """High-level download interface around yt-dlp."""
 
     def __init__(self):
         self.ffmpeg_available = _has_ffmpeg()
+
+    @staticmethod
+    def is_playlist_url(url: str) -> bool:
+        """Check whether the given URL indicates a playlist or channel."""
+        u = url.lower().strip()
+        return any(k in u for k in ("/playlist", "list=", "/channel/", "/c/", "/@"))
+
+    def fetch_playlist(self, url: str) -> PlaylistInfo:
+        """
+        Extract playlist metadata and video entries in flat mode (< 1-2 sec) without downloading media.
+        """
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": "in_playlist",
+            "no_color": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return PlaylistInfo(info)
 
     def fetch_info(self, url: str) -> VideoInfo:
         """
@@ -192,6 +276,40 @@ class Downloader:
                 return VideoInfo(info)
         except Exception:
             raise
+
+    def fetch_any(self, url: str) -> tuple[bool, Union[PlaylistInfo, VideoInfo]]:
+        """
+        Extract either playlist or single video metadata.
+        Returns (is_playlist: bool, info_object).
+        """
+        # If explicitly formatted as playlist, try fast flat extraction first
+        if self.is_playlist_url(url):
+            try:
+                pl = self.fetch_playlist(url)
+                if pl.total_count > 0:
+                    return True, pl
+            except Exception:
+                pass  # Fallback to single video extraction
+
+        # Try flat check first
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": "in_playlist",
+            "no_color": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            raw_info = ydl.extract_info(url, download=False)
+
+            if raw_info and (raw_info.get("_type") == "playlist" or raw_info.get("entries")):
+                return True, PlaylistInfo(raw_info)
+            else:
+                parsed = VideoInfo(raw_info)
+                if not parsed.formats:
+                    # Flat extraction omitted formats; re-fetch with full formats
+                    return False, self.fetch_info(url)
+                return False, parsed
 
     def download(
         self,
@@ -241,7 +359,17 @@ class Downloader:
         audio_quality = "320"
         actual_format = format_id
 
-        if format_id == "audio-mp3-320":
+        if format_id == "1080p":
+            actual_format = "bestvideo[height<=?1080]+bestaudio/best[height<=?1080]/best"
+        elif format_id == "720p":
+            actual_format = "bestvideo[height<=?720]+bestaudio/best[height<=?720]/best"
+        elif format_id == "480p":
+            actual_format = "bestvideo[height<=?480]+bestaudio/best[height<=?480]/best"
+        elif format_id == "360p":
+            actual_format = "bestvideo[height<=?360]+bestaudio/best[height<=?360]/best"
+        elif format_id == "best":
+            actual_format = "bestvideo+bestaudio/best"
+        elif format_id == "audio-mp3-320":
             actual_format = "bestaudio/best"
             audio_codec = "mp3"
             audio_quality = "320"
